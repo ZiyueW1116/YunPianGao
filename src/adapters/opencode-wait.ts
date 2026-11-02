@@ -2,11 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { setTimeout as delay } from "node:timers/promises"
 import type { Plugin } from "@opencode/plugin"
 import { Error as ToolError, type ToolContext } from "@opencode/plugin/promise/tool"
-import { createWaitRuntime, type TaskSnapshot, type TaskHandle } from "../wait.js"
+import { createWaitRuntime, type TaskSnapshot } from "../wait.js"
 
 type Context = Plugin.Context
 type SessionID = Parameters<Context["session"]["get"]>[0]["sessionID"]
 type Event = Awaited<ReturnType<Context["event"]["subscribe"]>> extends AsyncIterable<infer T> ? T : never
+type Child = { changed: Set<() => void>; accepted: boolean; launchError?: string; cancelRequested?: boolean; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
 const textResult = (value: unknown) => ({ content: JSON.stringify(value), metadata: { yunpiangao: true } })
 const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, additionalProperties: false })
 const string = { type: "string", minLength: 1 }
@@ -15,7 +16,7 @@ const string = { type: "string", minLength: 1 }
 function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
-    const aborted = () => { signal.removeEventListener("abort", aborted); reject(signal.reason) }
+    const aborted = () => reject(signal.reason)
     signal.addEventListener("abort", aborted, { once: true })
     Promise.resolve().then(() => { signal.throwIfAborted(); return run() }).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted))
   })
@@ -25,8 +26,8 @@ export async function setupWaitTools(ctx: Context) {
   const lifetime = new AbortController()
   const registrations: Array<{ dispose(): Promise<void> }> = []
   const pending = new Set<Promise<unknown>>()
-  const children = new Map<string, { handle: TaskHandle; snapshot: TaskSnapshot; changed: Set<() => void>; promptID?: string; cancelRequested?: boolean }>()
-  const parking = new Set<string>()
+  const children = new Map<string, Child>()
+  const parking = new Map<string, { idle?: number }>()
   const inputEpochs = new Map<string, number>()
   const modelEpochs = new Map<string, number>()
   let closed = false
@@ -52,28 +53,30 @@ export async function setupWaitTools(ctx: Context) {
     sessionID: context.sessionID, agent: context.agent, action, resources: [resource],
     source: { type: "tool", messageID: context.messageID, id: context.id },
   })
-  const notifyChild = (child: typeof children extends Map<string, infer T> ? T : never) => {
+  const notifyChild = (child: Child) => {
     for (const notify of child.changed) notify()
   }
-  const refreshChild = async (childID: string, signal: AbortSignal): Promise<TaskSnapshot> => {
-    const child = children.get(childID)!
-    if (!child) return { status: "working" }
-    if (["succeeded", "failed", "cancelled"].includes(child.snapshot.status)) return child.snapshot
+  const refreshChild = async (childID: string, child: Child, signal: AbortSignal): Promise<TaskSnapshot> => {
+    if (child.launchError) return { status: "failed", error: child.launchError }
+    if (!child.accepted) return { status: "working" }
     const sessionID = childID as SessionID
     if (child.cancelRequested) await request(signal, () => ctx.session.interrupt({ sessionID }, { signal }))
     // permission.asked 是瞬时事件；断线后从宿主当前待处理请求复核。
     const permissions = await request(signal, () => ctx.permission.list({ sessionID }, { signal }))
     if (permissions.length) return { status: "input_required", intervention: { permissions } }
+    if (child.forms.size) return { status: "input_required", intervention: { forms: [...child.forms.values()] } }
     const session = await request(signal, () => ctx.session.get({ sessionID }, { signal }))
     const messages = await request(signal, () => ctx.session.context({ sessionID }, { signal }))
-    const start = messages.findIndex((message) => message.id === child.promptID)
-    const answer = messages.slice(start + 1).findLast((message) => message.type === "assistant")
+    const answer = messages.findLast((message) => message.type === "assistant")
     if (answer?.type === "assistant") {
       const question = answer.content.find((part) => part.type === "tool" && part.name === "question" && part.state.status === "running")
       if (question) return { status: "input_required", intervention: { question } }
     }
-    // 新会话只有这次任务的输入；旧 outcome 本身不能证明这次执行完成。
-    if ((start >= 0 || child.cancelRequested) && session.outcome && session.time.idle) {
+    // 原生 outcome 在下一次执行开始后仍保留；只忽略内部停车对应的那一次 idle。
+    const parked = parking.get(childID)
+    if (session.outcome === "interrupted" && parked && (parked.idle === undefined || parked.idle === session.time.idle) && !child.cancelRequested) return { status: "working" }
+    // 新会话只有这次任务，输入接纳状态独立于可能被压缩移除的原始消息。
+    if (session.outcome && session.time.idle) {
       const status = session.outcome === "succeeded" ? "succeeded" : session.outcome === "failed" ? "failed" : "cancelled"
       return { status, finishedAt: session.time.idle, result: answer?.type === "assistant" ? answer.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "", ...(answer?.type === "assistant" && answer.error ? { error: answer.error.message } : {}) }
     }
@@ -141,23 +144,22 @@ export async function setupWaitTools(ctx: Context) {
           await allow(context, "subagent", agent.id)
           context.signal.throwIfAborted()
           const session = await ctx.session.create({ parentID: context.sessionID, agent: agent.id, model: agent.model ?? parent.model, title: input.description, location: { directory: ctx.location.directory } }, { signal: lifetime.signal })
-          const changed = new Set<() => void>()
+          const child: Child = { changed: new Set(), accepted: false, forms: new Map() }
+          children.set(session.id, child)
           const handle = runtime.register(context.sessionID, "subagent", session.id, {
-            read: (signal) => refreshChild(session.id, signal),
-            subscribe(notify) { changed.add(notify); return () => { changed.delete(notify) } },
+            read: (signal) => refreshChild(session.id, child, signal),
+            subscribe(notify) { child.changed.add(notify); return () => { child.changed.delete(notify) } },
             async cancel(signal) {
-              children.get(session.id)!.cancelRequested = true
+              child.cancelRequested = true
               await request(signal, () => ctx.session.interrupt({ sessionID: session.id }, { signal }))
             },
           })
-          const child = { handle, changed, snapshot: { status: "working" } as TaskSnapshot, promptID: undefined as string | undefined }
-          children.set(session.id, child)
           try {
-            const prompt = await ctx.session.prompt({ sessionID: session.id, text: input.prompt }, { signal: lifetime.signal })
-            child.promptID = prompt.id
+            await ctx.session.prompt({ sessionID: session.id, text: input.prompt }, { signal: lifetime.signal })
+            child.accepted = true
             notifyChild(child)
           } catch {
-            child.snapshot = { status: "failed", error: "子 Agent 输入未成功接纳。" }
+            child.launchError = "子 Agent 输入未成功接纳。"
             notifyChild(child)
           }
           return textResult({ handle, instruction: "需要结果时单独调用 wait_for；需要介入时返回宿主请求标识。" })
@@ -183,7 +185,8 @@ export async function setupWaitTools(ctx: Context) {
           context.signal.throwIfAborted()
           if (epoch !== (inputEpochs.get(context.sessionID) ?? 0)) return textResult({ reason: "user_input", instruction: "等待未开始，请先处理新输入。" })
           const record = runtime.begin(context.sessionID, input.handle, Math.ceil((input.timeout ?? 600) * 1000))
-          parking.add(context.sessionID)
+          const parked: { idle?: number } = {}
+          parking.set(context.sessionID, parked)
           let rejectPause: (error: unknown) => void = () => {}
           const paused = new Promise<void>((resolve, reject) => {
             rejectPause = reject
@@ -195,6 +198,8 @@ export async function setupWaitTools(ctx: Context) {
             try {
               const interrupted = await request(lifetime.signal, () => ctx.session.interrupt({ sessionID: context.sessionID, resume: true }, { signal: lifetime.signal }))
               if (!interrupted.interrupted) throw new Error("宿主未确认暂停当前执行。")
+              const session = await request(lifetime.signal, () => ctx.session.get({ sessionID: context.sessionID }, { signal: lifetime.signal }))
+              parked.idle = session.time.idle
               runtime.activate(record.id)
             } catch (error) {
               runtime.onInterrupt(context.sessionID)
@@ -213,8 +218,9 @@ export async function setupWaitTools(ctx: Context) {
         description: "独立请求取消当前 session 的任务 handle。该操作与等待超时或取消等待分开；进程发送 SIGTERM，子 Agent 使用宿主中断接口。取消是协作式的，不保证任务立刻结束。",
         input: schema({ handle: string }, ["handle"]),
         async execute(raw, context) {
-          await runtime.cancel(context.sessionID, (raw as { handle: string }).handle)
-          return textResult(runtime.snapshot(context.sessionID))
+          const { handle } = raw as { handle: string }
+          await runtime.cancel(context.sessionID, handle)
+          return textResult({ handle, cancellationRequested: true })
         },
       })
     }))
@@ -234,14 +240,20 @@ export async function setupWaitTools(ctx: Context) {
         runtime.onInput(sessionID)
       },
       onEvent(event: Event) {
-        if (event.type === "session.execution.interrupted" && !parking.delete(event.data.sessionID)) runtime.onInterrupt(event.data.sessionID)
-        if (event.type === "permission.asked") {
-          const child = children.get(event.data.sessionID)
-          if (child) { child.snapshot = { status: "input_required", intervention: { permissionID: event.data.id, action: event.data.action } }; notifyChild(child) }
+        if (event.type === "session.deleted") {
+          runtime.onDelete(event.data.sessionID)
+          parking.delete(event.data.sessionID)
+          inputEpochs.delete(event.data.sessionID)
+          modelEpochs.delete(event.data.sessionID)
         }
+        if (event.type === "session.execution.interrupted" && !parking.has(event.data.sessionID)) runtime.onInterrupt(event.data.sessionID)
         if (event.type === "form.created") {
           const child = children.get(event.data.form.sessionID)
-          if (child) notifyChild(child)
+          if (child) { child.forms.set(event.data.form.id, event.data.form); notifyChild(child) }
+        }
+        if (event.type === "form.replied" || event.type === "form.cancelled") {
+          const child = children.get(event.data.sessionID)
+          if (child) { child.forms.delete(event.data.id); notifyChild(child) }
         }
         if ("sessionID" in event.data) {
           const child = children.get(event.data.sessionID as string)

@@ -39,7 +39,7 @@ export interface WaitPort {
 }
 
 type Task = { handle: TaskHandle; source: TaskSource; snapshot: TaskSnapshot; stop?: () => void; reading?: Promise<void>; dirty: boolean }
-type Waiting = { record: WaitRecord; active: boolean; sending: boolean; timer?: ReturnType<typeof setTimeout> }
+type Waiting = { record: WaitRecord; active: boolean; sending: boolean; delivery?: AbortController; timer?: ReturnType<typeof setTimeout> }
 
 /** 进程内保存任务与等待；结束等待不调用任务的 cancel。 */
 export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: number } = {}) {
@@ -66,14 +66,21 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
 
   const deliver = (wait: Waiting) => {
     if (closed || !wait.active || wait.sending || wait.record.state !== "ready") return
-    if (["user_input", "interrupted", "closed"].includes(wait.record.reason!)) {
+    if (["user_input", "interrupted"].includes(wait.record.reason!)) {
       wait.record.state = "delivered"
       return
     }
     wait.sending = true
-    track(Promise.resolve().then(() => port.resume(copy(wait.record), controller.signal)).then(() => {
+    const delivery = new AbortController()
+    wait.delivery = delivery
+    track(Promise.resolve().then(() => {
+      const signal = AbortSignal.any([controller.signal, delivery.signal])
+      signal.throwIfAborted()
+      return port.resume(copy(wait.record), signal)
+    }).then(() => {
       wait.record.state = "delivered"
-    }).catch(report).finally(() => {
+    }).catch((error) => { if (wait.record.state === "ready") report(error) }).finally(() => {
+      wait.delivery = undefined
       wait.sending = false
       if (!closed && wait.record.state === "ready") wait.timer = setTimeout(() => deliver(wait), interval)
     }))
@@ -131,7 +138,7 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       const now = Date.now()
       const wait: Waiting = { record: { id: `ypgw_${randomUUID()}`, sessionID, handle: task.handle, createdAt: now, deadline: now + timeoutMs, state: "waiting" }, active: false, sending: false }
       waits.set(wait.record.id, wait)
-      if (task.snapshot.status !== "working") settle(wait, task.snapshot.status, task.snapshot)
+      if (terminal(task.snapshot)) settle(wait, task.snapshot.status as ResumeReason, task.snapshot)
       else tick(wait)
       return copy(wait.record)
     },
@@ -144,15 +151,24 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
     },
     onInput(sessionID: string) { endSessionWait(sessionID, "user_input") },
     onInterrupt(sessionID: string) { endSessionWait(sessionID, "interrupted") },
+    onDelete(sessionID: string) {
+      for (const wait of waits.values()) {
+        if (wait.record.sessionID !== sessionID) continue
+        if (wait.timer) clearTimeout(wait.timer)
+        settle(wait, "interrupted")
+        wait.record.state = "delivered"
+        wait.delivery?.abort()
+      }
+    },
     async cancel(sessionID: string, handleID: string) {
       if (closed) throw new Error("等待 runtime 已关闭。")
       const task = lookup(sessionID, handleID)
       if (terminal(task.snapshot)) return
-      await task.source.cancel(controller.signal)
+      await track(Promise.resolve().then(() => task.source.cancel(controller.signal)))
       await refresh(task)
     },
-    async refresh(handleID?: string) {
-      await Promise.all([...tasks.values()].filter((task) => !handleID || task.handle.id === handleID).map(refresh))
+    async refresh() {
+      await Promise.all([...tasks.values()].map(refresh))
     },
     snapshot(sessionID: string) {
       return copy({ tasks: [...tasks.values()].filter((task) => task.handle.sessionID === sessionID).map(({ handle, snapshot }) => ({ handle, ...snapshot })), waits: [...waits.values()].filter((wait) => wait.record.sessionID === sessionID).map((wait) => wait.record) })

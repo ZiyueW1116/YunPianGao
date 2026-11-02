@@ -200,3 +200,68 @@ test("卸载取消接续请求与本地定时器，不取消任务", async () =>
   assert.equal(aborted, true)
   assert.equal(f.counts().cancels, 0)
 })
+
+test("介入解除且未通知时，再次等待重新查询来源", async () => {
+  const f = fixture()
+  try {
+    f.change({ status: "input_required", intervention: { id: "form-one" } })
+    await f.runtime.refresh()
+    const first = f.runtime.begin("parent", f.handle.id, 1000)
+    f.runtime.activate(first.id)
+    await until(() => f.delivered.length === 1)
+    const reads = f.counts().reads
+    f.change({ status: "succeeded", result: "介入后结果" }, false)
+    const second = f.runtime.begin("parent", f.handle.id, 1000)
+    f.runtime.activate(second.id)
+    await until(() => f.delivered.length === 2)
+    assert.equal(f.delivered[1].reason, "succeeded")
+    assert.equal(f.delivered[1].snapshot.result, "介入后结果")
+    assert.ok(f.counts().reads > reads)
+  } finally { await f.runtime.close() }
+})
+
+test("卸载等待已发起的取消请求响应信号后完成清理", async () => {
+  let cancelling = false, cleaned = false
+  const runtime = createWaitRuntime({ async resume() {} })
+  const handle = runtime.register("parent", "process", "cancel-cleanup", {
+    async read() { return { status: "working" } },
+    async cancel(signal) {
+      cancelling = true
+      await new Promise((resolve) => signal.addEventListener("abort", () => setTimeout(() => { cleaned = true; resolve() }, 30), { once: true }))
+    },
+  })
+  const cancellation = runtime.cancel("parent", handle.id)
+  await until(() => cancelling)
+  await runtime.close()
+  assert.equal(cleaned, true)
+  await cancellation
+})
+
+test("删除 owner 结束未激活等待、重试和在途投递，不取消后台任务", async () => {
+  for (const phase of ["inactive", "retry", "sending-success", "sending-failure"]) {
+    let release, attempts = 0
+    const f = fixture({ async resume() {
+      attempts++
+      if (phase === "retry") throw new Error("合成投递失败")
+      await new Promise((resolve) => { release = resolve })
+      if (phase === "sending-failure") throw new Error("合成在途失败")
+    } })
+    try {
+      const wait = f.runtime.begin("parent", f.handle.id, phase === "inactive" ? 1000 : 0)
+      if (phase !== "inactive") {
+        f.runtime.activate(wait.id)
+        await until(() => attempts === 1)
+      }
+      f.runtime.onDelete("parent")
+      const errors = f.errors.length
+      release?.()
+      f.runtime.activate(wait.id)
+      f.change({ status: "succeeded" })
+      await f.runtime.refresh(); await sleep(20)
+      assert.equal(attempts, phase === "inactive" ? 0 : 1)
+      assert.equal(f.errors.length, errors)
+      assert.equal(f.runtime.snapshot("parent").waits[0].state, "delivered")
+      assert.equal(f.counts().cancels, 0)
+    } finally { release?.(); await f.runtime.close() }
+  }
+})

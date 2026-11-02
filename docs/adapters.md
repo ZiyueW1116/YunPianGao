@@ -56,22 +56,29 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 `onInput(sessionID)` 或 `onInterrupt(sessionID)` 结束尚未完成的等待，分别记录 `user_input` 或 `interrupted`，不再调用 `resume`；输入与中断的后续执行由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
 
+`onDelete(sessionID)` 结束该 owner 的全部等待，停止重试并向在途投递传递取消信号，不取消后台任务。已经被宿主接纳的输入不能撤回。
+
 `snapshot(sessionID)` 返回结构化任务与等待副本，包含 handle、执行标识、期限、状态、恢复原因及结果。宿主应把依赖状态接入后续上下文，不能仅依赖可能被压缩的聊天文本。OpenCode 的系统上下文只注入依赖元数据；原始输出通过工具结果或 synthetic 输入传递，需要时可以再次等待同一 handle 获取缓存的终态结果。
 
-`close()` 解除订阅、停止定时器、取消本地请求并等待其退出，不调用任务的 `cancel`。端口的异步操作必须响应取消信号。状态、任务结果和已结束等待保留到该 runtime 实例被释放，不提供跨重启恢复。
+`close()` 解除订阅、停止定时器、取消本地请求并等待其退出，包括已发起的 `cancel` 请求；关闭本身不调用任务的 `cancel`。端口的异步操作必须响应取消信号。状态、任务结果和已结束等待保留到该 runtime 实例被释放，不提供跨重启恢复。
 
 ### OpenCode 2.1.4
 
 适配器使用公开工具注册接口添加四个工具。`wait_for.timeout` 使用秒，核心的 `timeoutMs` 使用毫秒；`CompactionPort.wait` 仍只等待压缩控制项。
 
-后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
+后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，`shell` 的 deny/ask 不约束它；未匹配 `yunpiangao.process` 规则时，宿主默认 allow，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
 
-子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版禁止子会话通过此工具嵌套启动任务。执行事件及 session 查询用于观察结果，`permission.list` 和运行中的 `question` 工具用于识别介入需求；授权或表单在宿主 UI 中处理，插件不自动批准。取消使用原生中断，不删除子会话或宿主排队输入。
+子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版子会话不得再次调用 `start_subagent`，可以调用 `start_process` 和 `wait_for`。输入接纳状态保存在插件内，子会话压缩移除原始输入后仍可读取完成结果。
+
+执行事件及 session 查询用于观察结果，`permission.list`、运行中的 `question` 工具，以及 `form.created` 事件用于识别介入需求；表单经 `form.replied` 或 `form.cancelled` 清除，覆盖原生 `websearch` 的提供者选择表单。授权或表单在宿主 UI 中处理，插件不自动批准。2.1.4 的公开插件接口没有表单列表查询，断线漏掉表单创建或关闭事件时，无法保证恢复当前表单状态；权限与 `question` 仍可由查询复核。取消使用原生中断，不删除子会话或宿主排队输入；`cancel_task` 只返回目标 handle 的取消请求回执，不带其他任务结果。
+
+收到 owner 删除事件后，插件结束其等待，不调用任务的 `cancel`。独立进程继续运行；OpenCode 删除会话时会中断并递归删除原生子会话，插件不改变该宿主行为。
 
 源码核对版本为 tag `v2.1.4`，commit `68bc26b7da1990ce10ffecfbc1e09eb13aa5d824`。影响接续的宿主能力包括：
 
 - [Promise 适配器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/plugin/src/promise/adapter.ts) 提供工具执行的 `AbortSignal`；公开 session API 没有停放执行或恢复任意工具栈的操作。进程内 API 未转发 `RequestOptions.signal`，插件以取消竞争结束本地等待，宿主已接纳的操作可能继续。
 - [执行协调器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/run-coordinator.ts) 在中断时清除旧唤醒，在清理期间接纳新唤醒。[`interrupt({resume:true})`](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/execution.ts) 保留并发到达的 steering 输入。适配器确认中断后才激活等待。
+- [会话投影](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/projector.ts) 为每次执行终态严格推进 `time.idle`，新执行开始后仍保留上次 `outcome`。适配器在内部中断确认后、激活接续前查询其 `idle`，只将该代次的 `interrupted` 视作停车，后续外部中断仍视作取消。中断回执不含原子的执行代次；若其他宿主输入在确认与查询之间又完成一轮执行，这两次中断的归属无法仅凭该回执区分。
 - 工具可在模型流结束前执行。适配器等待 assistant 的 `time.streamed`，再复核完整工具列表；同一步有其他工具时拒绝暂停。输入版本检查阻止模型流期间新输入到达后的过期等待意图。
 - [synthetic 输入](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/session.ts) 进入原生 inbox 并触发执行；同一输入 ID 的接纳由[队列](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/inbox.ts) 去重。等待结果使用固定消息 ID，任务状态也通过 `context` hook 注入后续请求，因此压缩后仍可复核依赖。
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。

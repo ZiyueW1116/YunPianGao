@@ -15,7 +15,7 @@ export default {
     ]
     const watching = (async () => {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
-        if (/^session\.(execution\.|compaction\.|step\.|tool\.|inbox\.)/.test(event.type) || event.type === "permission.asked")
+        if (/^session\.(execution\.|compaction\.|step\.|tool\.|inbox\.)|^form\./.test(event.type) || event.type === "permission.asked" || event.type === "session.deleted")
           appendFileSync(ctx.options.events, JSON.stringify({ type: event.type, ...event.data }) + "\n")
       }
     })().catch((error) => { if (!abort.signal.aborted) throw error })
