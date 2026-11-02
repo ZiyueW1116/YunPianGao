@@ -49,7 +49,7 @@ def main():
                 errors.extend(inspect(name,archive.extractfile(member).read(),package=True))
     else:
         top=subprocess.check_output(['git','rev-parse','--show-toplevel'],cwd=ROOT,text=True).strip()
-        if Path(top).resolve()!=ROOT:raise SystemExit('请在独立的 InterAct 仓库中运行检查。')
+        if Path(top).resolve()!=ROOT:raise SystemExit('请在独立的 YunPianGao 仓库中运行检查。')
         names=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],cwd=ROOT).decode().split('\0')
         for name in sorted(set(filter(None,names))):
             path=ROOT/name;count+=1

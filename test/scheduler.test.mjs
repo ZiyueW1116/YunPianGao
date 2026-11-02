@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { createInterAct, StaleSummaryError } from "../dist/index.js"
+import { createYunPianGao, StaleSummaryError } from "../dist/index.js"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const deferred = () => {
@@ -34,7 +34,7 @@ function fixture(overrides = {}, options = {}) {
     onError(error) { calls.errors.push(error) },
     ...overrides,
   }
-  engine = createInterAct(port, { thresholdTokens: 100, idleDelayMs: 1, ...options })
+  engine = createYunPianGao(port, { thresholdTokens: 100, idleDelayMs: 1, ...options })
   return { engine, calls, setSource(value) { source = value }, setSignature(value) { signature = value } }
 }
 
@@ -139,7 +139,7 @@ test("独立会话的准备状态互不覆盖", async () => {
   const used = []
   let engine
   const completed = new Set()
-  engine = createInterAct({
+  engine = createYunPianGao({
     async latestCompleted(id) { if (!completed.has(id)) return { messageID: id, tokens: 200 } },
     async prepare(id) { return { text: id, fingerprint: id } },
     async compact(id) { used.push(engine.takePrepared(id, id)); completed.add(id) },
@@ -186,7 +186,7 @@ test("卸载将取消信号传给进行中的准备请求", async () => {
 test("无效选项在启动调度前被拒绝", () => {
   const port = {}
   for (const thresholdTokens of [0, -1, NaN, Infinity, "100"])
-    assert.throws(() => createInterAct(port, { thresholdTokens }), TypeError)
-  assert.throws(() => createInterAct(port, { idleDelayMs: -1 }), TypeError)
-  assert.throws(() => createInterAct(port, { strategy: "unknown" }), TypeError)
+    assert.throws(() => createYunPianGao(port, { thresholdTokens }), TypeError)
+  assert.throws(() => createYunPianGao(port, { idleDelayMs: -1 }), TypeError)
+  assert.throws(() => createYunPianGao(port, { strategy: "unknown" }), TypeError)
 })

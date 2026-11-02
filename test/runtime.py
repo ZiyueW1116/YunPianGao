@@ -28,7 +28,7 @@ def wait(check,timeout=15):
     raise TimeoutError('合成调度检查超时')
 
 def run_case(name):
-    with tempfile.TemporaryDirectory(prefix='interact-synthetic-') as td:
+    with tempfile.TemporaryDirectory(prefix='yunpiangao-synthetic-') as td:
         root=Path(td).resolve();workspace=root/'workspace';workspace.mkdir();runtime=root/'runtime';runtime.mkdir()
         for folder in ['config','data','state','cache']:(runtime/folder).mkdir()
         calls=[];release=threading.Event();started=threading.Event()
@@ -37,7 +37,7 @@ def run_case(name):
             def log_message(self,*args):pass
             def do_POST(self):
                 body=json.loads(self.rfile.read(int(self.headers['content-length'])))
-                kind=self.headers.get('x-interact-test-kind','primary')
+                kind=self.headers.get('x-yunpiangao-test-kind','primary')
                 calls.append({'kind':kind,'during_prepare':started.is_set() and not release.is_set()})
                 if kind=='generate':
                     started.set();release.wait(10)
@@ -107,7 +107,7 @@ def run_case(name):
                 wait(lambda:finished()>=2)
             data=api('GET',f'/api/experimental/session/{sid}/export?sanitize=false')['data']
             users=[m for m in data['messages'] if m['type']=='user'];assert len(users)==2
-            assert all('INTERACT_PREPARE_' not in m['text'] for m in users)
+            assert all('YUNPIANGAO_PREPARE_' not in m['text'] for m in users)
             if name in ['prepared','direct']:
                 compacted=[m for m in data['messages'] if m['type']=='compaction' and m['status']=='completed']
                 assert len(compacted)==1 and 'SYNTHETIC_CHECKPOINT' in compacted[0]['summary']
@@ -117,7 +117,7 @@ def run_case(name):
         except BaseException:
             print('合成检查诊断',json.dumps({'case':name,'calls':calls,'events':events()},ensure_ascii=False))
             lines=(runtime/'server.log').read_text(errors='replace').splitlines()
-            print('合成进程诊断','\n'.join(re.sub(r'server password \S+','server password [redacted]',line) for line in lines if 'InterAct' in line or 'error' in line.lower())[-6000:])
+            print('合成进程诊断','\n'.join(re.sub(r'server password \S+','server password [redacted]',line) for line in lines if 'YunPianGao' in line or 'error' in line.lower())[-6000:])
             raise
         finally:
             release.set()

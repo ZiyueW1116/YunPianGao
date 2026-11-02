@@ -1,8 +1,8 @@
-# InterAct
+# 云片糕 · YunPianGao
 
 在 Agent 执行间隙准备上下文摘要，供下一轮接续工作。
 
-InterAct 将调度核心与 Harness 适配器分开。当前提供 **OpenCode 2.1.4** 适配器，使用已完成回答后的空闲窗口准备摘要，再交给原生 compact 提交。其他 Harness 可以实现 `CompactionPort` 接入；目前没有发布其他适配器。
+YunPianGao 将调度核心与 Harness 适配器分开。当前提供 **OpenCode 2.1.4** 适配器，使用已完成回答后的空闲窗口准备摘要，再交给原生 compact 提交。其他 Harness 可以实现 `CompactionPort` 接入；目前没有发布其他适配器。
 
 这是实验版本。已有的调度检查不能证明真实模型摘要无损，也没有证明与原生压缩质量等价。
 
@@ -21,8 +21,8 @@ InterAct 将调度核心与 Harness 适配器分开。当前提供 **OpenCode 2.
 当前从源码构建，尚未发布 npm 包。需要 Node.js 22 或更新版本来构建，适配器目标版本为 OpenCode 2.1.4。
 
 ```sh
-git clone https://github.com/ZiyueW1116/InterAct.git
-cd InterAct
+git clone https://github.com/ZiyueW1116/YunPianGao.git
+cd YunPianGao
 npm ci
 npm run build
 ```
@@ -33,7 +33,7 @@ npm run build
 {
   "plugins": [
     {
-      "package": "/absolute/path/to/InterAct",
+      "package": "/absolute/path/to/YunPianGao",
       "options": {
         "thresholdTokens": 480000,
         "idleDelayMs": 1500,
@@ -54,11 +54,11 @@ OpenCode 2.1.4 的显式插件配置要求目录路径；仓库根目录的 `ser
 | `idleDelayMs` | `1500` | 执行成功后等待的毫秒数，新输入会取消该次计划 |
 | `strategy` | `prepare-then-commit` | 先临时生成，再复核并提交；`direct` 则在空闲时直接排队调用原生 compact |
 
-适配器仅处理当前工作目录中已成功结束的父会话。原生自动压缩配置继续由 OpenCode 管理；不需要为 InterAct 关闭它。插件不修改原生的保留历史预算。
+适配器仅处理当前工作目录中已成功结束的父会话。原生自动压缩配置继续由 OpenCode 管理；不需要为 YunPianGao 关闭它。插件不修改原生的保留历史预算。
 
 ## 接入其他 Harness
 
-通用入口导出 `createInterAct`，OpenCode 适配器单独导出于 `@ziyuew1116/interact/opencode`。核心不导入 OpenCode SDK；源码见 [scheduler.ts](src/scheduler.ts)。
+通用入口导出 `createYunPianGao`，OpenCode 适配器单独导出于 `@ziyuew1116/yunpiangao/opencode`。核心不导入 OpenCode SDK；源码见 [scheduler.ts](src/scheduler.ts)。
 
 宿主需要提供完成与输入事件、读取最近完整回答、临时生成摘要、原生排队提交和等待完成的能力，并能在持久化边界复核当前上下文。仅有事件通知还不足以安全替换上下文。接口及生命周期约定见 [适配契约](docs/adapters.md)。
 

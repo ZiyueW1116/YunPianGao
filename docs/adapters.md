@@ -1,6 +1,6 @@
 # Harness 适配契约
 
-`createInterAct(port, options)` 创建一个进程内调度器。会话标识用于隔离状态；token 阈值针对最近完整回答的用量，不是历史累计计费量。
+`createYunPianGao(port, options)` 创建一个进程内调度器。会话标识用于隔离状态；token 阈值针对最近完整回答的用量，不是历史累计计费量。
 
 ## 事件
 

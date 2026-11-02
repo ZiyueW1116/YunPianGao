@@ -42,7 +42,7 @@ function positive(value: unknown, fallback: number, name: string, allowZero = fa
   return selected
 }
 
-export function createInterAct(port: CompactionPort, options: Options = {}) {
+export function createYunPianGao(port: CompactionPort, options: Options = {}) {
   const threshold = positive(options.thresholdTokens, 100_000, "thresholdTokens")
   const delay = positive(options.idleDelayMs, 1_500, "idleDelayMs", true)
   const strategy = options.strategy ?? "prepare-then-commit"

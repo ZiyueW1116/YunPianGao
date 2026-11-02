@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import type { SessionRequest } from "@opencode/plugin/promise/session"
-import { createInterAct, type Options } from "../scheduler.js"
+import { createYunPianGao, type Options } from "../scheduler.js"
 
 const headings = ["## Objective", "## Requirements", "## Decisions", "## Work State", "## Next Move", "## Relevant Files", "## Important Context"]
 const summaryPrompt = `请把以上对话整理为供后续 agent 继续工作的摘要。保留用户目标、要求、已作决定、完成事项、未完成事项和关键标识；后续消息优先于旧信息。保留精确路径和错误信息，区分已验证事实与推测。不要继续任务，不要调用工具。只返回摘要，完整使用以下标题：\n${headings.join("\n")}`
@@ -12,14 +12,14 @@ type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type CompactionID = NonNullable<Parameters<Plugin.Context["session"]["compact"]>[0]["id"]>
 
 const adapter: Plugin.Plugin = {
-  id: "interact.opencode",
+  id: "yunpiangao.opencode",
   async setup(ctx) {
     const preparing = new Map<string, { marker: string; fingerprint?: string }>()
     const registrations: Array<{ dispose(): Promise<void> }> = []
     const eventController = new AbortController()
     const nativeID = (sessionID: string, messageID: string) =>
-      `msg_interact_${createHash("sha256").update(`${sessionID}:${messageID}`).digest("hex").slice(0, 24)}` as CompactionID
-    const engine = createInterAct({
+      `msg_yunpiangao_${createHash("sha256").update(`${sessionID}:${messageID}`).digest("hex").slice(0, 24)}` as CompactionID
+    const engine = createYunPianGao({
       async latestCompleted(sessionID, signal) {
         const id = sessionID as SessionID
         const session = await ctx.session.get({ sessionID: id }, { signal })
@@ -30,7 +30,7 @@ const adapter: Plugin.Plugin = {
         return { messageID: last.id, tokens: last.tokens.input + last.tokens.cache.read + last.tokens.cache.write + last.tokens.output }
       },
       async prepare(sessionID, source, signal) {
-        const job = { marker: `INTERACT_PREPARE_${nativeID(sessionID, source.messageID)}` } as { marker: string; fingerprint?: string }
+        const job = { marker: `YUNPIANGAO_PREPARE_${nativeID(sessionID, source.messageID)}` } as { marker: string; fingerprint?: string }
         preparing.set(sessionID, job)
         try {
           const generated = await ctx.session.generate({ sessionID: sessionID as SessionID, prompt: job.marker }, { signal })
@@ -43,7 +43,7 @@ const adapter: Plugin.Plugin = {
         await ctx.session.compact({ sessionID: sessionID as SessionID, id: nativeID(sessionID, source.messageID), delivery: "queue" }, { signal })
       },
       async wait(sessionID, signal) { await ctx.session.wait({ sessionID: sessionID as SessionID }, { signal }) },
-      onError() { console.warn("InterAct 本次空闲压缩未完成；请在原会话中检查状态，完整历史不会由插件直接改写。") },
+      onError() { console.warn("云片糕（YunPianGao）本次空闲压缩未完成；请在原会话中检查状态，完整历史不会由插件直接改写。") },
     }, ctx.options as Options)
 
     let watching: Promise<void> = Promise.resolve()
@@ -80,7 +80,7 @@ const adapter: Plugin.Plugin = {
         if (!eventController.signal.aborted) {
           eventController.abort()
           await engine.close()
-          console.warn("InterAct 事件订阅已停止；已取消本地定时器和准备请求。请重新加载插件。")
+          console.warn("云片糕（YunPianGao）事件订阅已停止；已取消本地定时器和准备请求。请重新加载插件。")
         }
       })
       return close
