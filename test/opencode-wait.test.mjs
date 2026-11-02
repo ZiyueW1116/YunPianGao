@@ -26,6 +26,7 @@ async function fixture() {
       },
       async create() { return { id: "child" } },
       async prompt() { return { id: "child-prompt" } },
+      async wait() {},
       async context({ sessionID }) {
         if (sessionID === "parent") return [message]
         if (childMessages) return childMessages
@@ -327,4 +328,130 @@ test("旧中断事件的查询晚于新等待时不结束新等待", async () =>
     await until(() => f.resumes.length === 1)
     assert.equal(f.resumes[0].metadata.reason, "succeeded")
   } finally { resolveOld?.({ id: "parent", time: {} }); await f.plugin.close() }
+})
+
+for (const previousIdle of [undefined, 2]) test(`停车等待原生清理完成后记录 idle（旧值 ${previousIdle}）`, async () => {
+  const f = await fixture()
+  let returned
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 200)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    const get = f.ctx.session.get, interrupt = f.ctx.session.interrupt
+    let idle = previousIdle, settling, waitCalls = 0
+    const toolReturned = new Promise((resolve) => { returned = resolve })
+    f.ctx.session.get = async (input) => input.sessionID === "child" ? { id: "child", outcome: idle === undefined ? undefined : "interrupted", time: { idle } } : get(input)
+    f.ctx.session.interrupt = async (input) => {
+      if (input.sessionID !== "child") return interrupt(input)
+      f.childController.abort()
+      settling = (async () => {
+        await toolReturned
+        await sleep(10)
+        idle = 3
+        f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "child" } })
+      })()
+      return { interrupted: true }
+    }
+    f.ctx.session.wait = async ({ sessionID }) => { if (sessionID === "child") { waitCalls++; await settling } }
+    f.setChild(undefined, [{ id: "child-prompt", type: "user" }, { id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    returned()
+    await settling; await sleep(5)
+    await f.tools.get("wait_for").execute({ handle: f.handle.id, timeout: .07 }, f.context)
+    await f.plugin.reconcile(); await sleep(5)
+    assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
+    idle = 4
+    f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "child" } })
+    await f.plugin.reconcile()
+    await until(() => f.resumes.some((r) => r.sessionID === "parent"))
+    assert.equal(f.resumes.find((r) => r.sessionID === "parent").metadata.reason, "cancelled")
+    assert.equal(waitCalls, 1)
+  } finally { returned?.(); await f.plugin.close() }
+})
+
+test("漏掉 owner 删除事件时，接续确认会话不存在后停止重试", async () => {
+  const f = await fixture()
+  try {
+    f.ctx.session.synthetic = async (input) => {
+      f.resumes.push(input)
+      throw Object.assign(new Error("合成会话不存在"), { _tag: "Session.NotFoundError", sessionID: input.sessionID })
+    }
+    f.complete(); await f.plugin.reconcile()
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await until(() => f.resumes.length > 0)
+    await sleep(550)
+    assert.equal(f.resumes.length, 1)
+    const event = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(event)
+    assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).waits[0].state, "delivered")
+  } finally { await f.plugin.close() }
+})
+
+test("重连复核在任务未完成时发现 owner 已删除并结束等待", async () => {
+  const f = await fixture()
+  try {
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await sleep(5)
+    const get = f.ctx.session.get
+    f.ctx.session.get = async (input) => {
+      if (input.sessionID === "parent") throw { _tag: "Session.NotFoundError", sessionID: "parent" }
+      return get(input)
+    }
+    await f.plugin.reconcile()
+    const event = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(event)
+    const state = JSON.parse(event.system[0].text.split("\n", 2)[1])
+    assert.equal(state.tasks[0].status, "working")
+    assert.equal(state.waits[0].state, "delivered")
+    f.complete(); await f.plugin.reconcile()
+    assert.equal(f.resumes.length, 0)
+  } finally { await f.plugin.close() }
+})
+
+test("漏掉子会话删除事件时，查询确认不存在后父 handle 返回取消", async () => {
+  const f = await fixture()
+  try {
+    const get = f.ctx.session.get
+    f.ctx.session.get = async (input) => {
+      if (input.sessionID === "child") throw { _tag: "Session.NotFoundError", sessionID: "child" }
+      return get(input)
+    }
+    await f.tools.get("wait_for").execute({ handle: f.handle.id, timeout: .05 }, f.context)
+    await f.plugin.reconcile()
+    await until(() => f.resumes.length === 1)
+    assert.equal(f.resumes[0].metadata.reason, "cancelled")
+  } finally { await f.plugin.close() }
+})
+
+test("普通查询失败、错误标签或其他 session 的缺失不当作删除，恢复后仍可成功", async () => {
+  for (const target of ["parent", "child"]) for (const error of [new Error("合成临时错误"), { _tag: "Session.NotFoundError", sessionID: "other" }, { _tag: "Other.NotFoundError", sessionID: target }]) {
+    const f = await fixture()
+    try {
+      await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+      await sleep(5)
+      const get = f.ctx.session.get
+      f.ctx.session.get = async (input) => { if (input.sessionID === target) throw error; return get(input) }
+      await assert.doesNotReject(f.plugin.reconcile())
+      const event = { sessionID: "parent", system: [] }
+      f.hooks.get("context")(event)
+      assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).waits[0].state, "waiting")
+      f.ctx.session.get = get
+      f.complete(); await f.plugin.reconcile()
+      await until(() => f.resumes.length === 1)
+      assert.equal(f.resumes[0].metadata.reason, "succeeded")
+    } finally { await f.plugin.close() }
+  }
+})
+
+test("卸载取消重连时的 owner 本地复核并等待收尾", async () => {
+  const f = await fixture()
+  let resolveQuery
+  const get = f.ctx.session.get
+  f.ctx.session.get = async (input) => input.sessionID === "parent" ? new Promise((resolve) => { resolveQuery = resolve }) : get(input)
+  const reconciling = f.plugin.reconcile()
+  try {
+    await until(() => resolveQuery)
+    await f.plugin.close()
+    await reconciling
+  } finally { resolveQuery?.({ id: "parent", time: {} }); await f.plugin.close() }
 })

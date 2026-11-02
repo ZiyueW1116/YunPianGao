@@ -11,6 +11,8 @@ type Child = { changed: Set<() => void>; accepted: boolean; launchError?: string
 const textResult = (value: unknown) => ({ content: JSON.stringify(value), metadata: { yunpiangao: true } })
 const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, additionalProperties: false })
 const string = { type: "string", minLength: 1 }
+const missingSession = (error: unknown, sessionID: string) => typeof error === "object" && error !== null &&
+  "_tag" in error && error._tag === "Session.NotFoundError" && "sessionID" in error && error.sessionID === sessionID
 
 // 2.1.4 的进程内 Promise 适配器未转发 RequestOptions.signal；只结束本地等待，不撤销宿主已接纳的工作。
 function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
@@ -27,25 +29,33 @@ export async function setupWaitTools(ctx: Context) {
   const registrations: Array<{ dispose(): Promise<void> }> = []
   const pending = new Set<Promise<unknown>>()
   const children = new Map<string, Child>()
+  // 仅记录已注册任务的 owner，供事件重连时复核。
+  const owners = new Set<string>()
   const parking = new Map<string, { idle?: number }>()
   const inputEpochs = new Map<string, number>()
   const modelEpochs = new Map<string, number>()
   let closed = false
   const report = () => { if (!closed) console.warn("云片糕（YunPianGao）任务状态或接续请求暂未完成；运行时将复核或重试。") }
-  const track = (work: Promise<unknown>) => {
+  const track = <T>(work: Promise<T>) => {
     pending.add(work)
     void work.catch(report).finally(() => pending.delete(work))
+    return work
   }
   const runtime = createWaitRuntime({
     async resume(record, signal) {
-      await request(signal, () => ctx.session.synthetic({
-        sessionID: record.sessionID as SessionID,
-        id: `msg_${record.id}`,
-        text: `云片糕任务等待已结束，请结合最新用户输入继续。\n${JSON.stringify(record)}`,
-        description: "任务等待结果",
-        metadata: { source: "yunpiangao.wait", waitID: record.id, handle: record.handle.id, reason: record.reason! },
-        delivery: "steer",
-      }, { signal }))
+      try {
+        await request(signal, () => ctx.session.synthetic({
+          sessionID: record.sessionID as SessionID,
+          id: `msg_${record.id}`,
+          text: `云片糕任务等待已结束，请结合最新用户输入继续。\n${JSON.stringify(record)}`,
+          description: "任务等待结果",
+          metadata: { source: "yunpiangao.wait", waitID: record.id, handle: record.handle.id, reason: record.reason! },
+          delivery: "steer",
+        }, { signal }))
+      } catch (error) {
+        if (!missingSession(error, record.sessionID)) throw error
+        endDeletedSession(record.sessionID)
+      }
     },
     onError: report,
   })
@@ -55,6 +65,19 @@ export async function setupWaitTools(ctx: Context) {
   })
   const notifyChild = (child: Child) => {
     for (const notify of child.changed) notify()
+  }
+  const endDeletedSession = (sessionID: string, deletedAt = Date.now()) => {
+    runtime.stopWaits(sessionID)
+    owners.delete(sessionID)
+    const child = children.get(sessionID)
+    if (child) {
+      child.deletedAt = deletedAt
+      children.delete(sessionID)
+      notifyChild(child)
+    }
+    parking.delete(sessionID)
+    inputEpochs.delete(sessionID)
+    modelEpochs.delete(sessionID)
   }
   const refreshChild = async (childID: string, child: Child, signal: AbortSignal): Promise<TaskSnapshot> => {
     if (child.deletedAt !== undefined) return { status: "cancelled", finishedAt: child.deletedAt }
@@ -117,6 +140,7 @@ export async function setupWaitTools(ctx: Context) {
             changedState()
           })
           child.unref()
+          owners.add(context.sessionID)
           const handle = runtime.register(context.sessionID, "process", `${context.id}:${child.pid ?? "spawn-error"}`, {
             async read() { return snapshot },
             subscribe(notify) { changed.add(notify); return () => { changed.delete(notify) } },
@@ -147,10 +171,12 @@ export async function setupWaitTools(ctx: Context) {
           const session = await ctx.session.create({ parentID: context.sessionID, agent: agent.id, model: agent.model ?? parent.model, title: input.description, location: { directory: ctx.location.directory } }, { signal: lifetime.signal })
           const child: Child = { changed: new Set(), accepted: false, forms: new Map() }
           children.set(session.id, child)
+          owners.add(context.sessionID)
           const handle = runtime.register(context.sessionID, "subagent", session.id, {
             async read(signal) {
               try { return await refreshChild(session.id, child, signal) }
               catch (error) {
+                if (missingSession(error, session.id)) endDeletedSession(session.id)
                 if (child.deletedAt !== undefined) return { status: "cancelled", finishedAt: child.deletedAt }
                 throw error
               }
@@ -206,6 +232,8 @@ export async function setupWaitTools(ctx: Context) {
             try {
               const interrupted = await request(lifetime.signal, () => ctx.session.interrupt({ sessionID: context.sessionID, resume: true }, { signal: lifetime.signal }))
               if (!interrupted.interrupted) throw new Error("宿主未确认暂停当前执行。")
+              // interrupt 只确认接纳；原生清理和终态提交完成后才能记录停车代次。
+              await request(lifetime.signal, () => ctx.session.wait({ sessionID: context.sessionID }, { signal: lifetime.signal }))
               const session = await request(lifetime.signal, () => ctx.session.get({ sessionID: context.sessionID }, { signal: lifetime.signal }))
               parked.idle = session.time.idle
               runtime.activate(record.id)
@@ -249,16 +277,7 @@ export async function setupWaitTools(ctx: Context) {
       },
       onEvent(event: Event) {
         if (event.type === "session.deleted") {
-          runtime.stopWaits(event.data.sessionID)
-          const child = children.get(event.data.sessionID)
-          if (child) {
-            child.deletedAt = event.created
-            children.delete(event.data.sessionID)
-            notifyChild(child)
-          }
-          parking.delete(event.data.sessionID)
-          inputEpochs.delete(event.data.sessionID)
-          modelEpochs.delete(event.data.sessionID)
+          endDeletedSession(event.data.sessionID, event.created)
         }
         if (event.type === "session.execution.interrupted") {
           const sessionID = event.data.sessionID
@@ -282,7 +301,18 @@ export async function setupWaitTools(ctx: Context) {
           if (child && /^session\.execution\.|^permission\./.test(event.type)) notifyChild(child)
         }
       },
-      reconcile() { return runtime.refresh() },
+      reconcile() {
+        return track((async () => {
+          await Promise.all([...owners].map(async (sessionID) => {
+            try { await request(lifetime.signal, () => ctx.session.get({ sessionID: sessionID as SessionID }, { signal: lifetime.signal })) }
+            catch (error) {
+              if (missingSession(error, sessionID)) endDeletedSession(sessionID)
+              else report()
+            }
+          }))
+          await runtime.refresh()
+        })())
+      },
       async close() {
         closed = true
         lifetime.abort()

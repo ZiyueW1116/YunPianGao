@@ -58,7 +58,7 @@ def run_case(name):
                     elif primary==2 or (name=='process-timeout' and primary==3) or (name.endswith('cancel') and primary==4) or (name=='child-permission' and primary==4):
                         handle=re.search(r'ypg_[0-9a-f-]{36}',history)
                         assert handle,history
-                        tool=('wait_for',{'handle':handle[0],'timeout':.15 if name=='process-timeout' and primary==2 else .6 if name=='child-deleted' else 10});waiting.set()
+                        tool=('wait_for',{'handle':handle[0],'timeout':.15 if name=='process-timeout' and primary==2 else .6 if name in ['child-deleted','child-missed-delete'] else 10});waiting.set()
                     elif name.endswith('cancel') and primary==3:
                         handle=re.search(r'ypg_[0-9a-f-]{36}',history)
                         tool=('cancel_task',{'handle':handle[0]})
@@ -81,6 +81,8 @@ def run_case(name):
                 'providers':{'synthetic':{'name':'本地合成替身','package':'@opencode/ai/providers/openai-compatible',
                 'settings':{'baseURL':f'http://127.0.0.1:{provider.server_port}/v1','apiKey':'synthetic-only'},
                 'models':{'synthetic':{'limit':{'context':600000,'output':384000}}}}}}
+        if name in ['process-missed-delete','child-missed-delete']:
+            config['plugins'][1]={'package':str(ROOT/'test/disconnected'),'options':{'events':str(root/'events.jsonl')}}
         if name=='child-compact':
             config['compaction']={'auto':True,'keep':{'tokens':0},'buffer':60000}
             config['experimental']={'background_compaction':False}
@@ -134,10 +136,14 @@ def run_case(name):
             elif name=='process-timeout':
                 wait(lambda:sum(e['type']=='session.execution.interrupted' and e['sessionID']==sid for e in events())==2)
                 assert primary==3
-            elif name=='process-deleted':
+            elif name in ['process-deleted','process-missed-delete']:
                 api('DELETE',f'/api/session/{sid}')
                 wait(lambda:any(e['type']=='session.deleted' and e['sessionID']==sid for e in events()))
-            elif name=='child-deleted':
+                if name=='process-missed-delete':
+                    time.sleep(.7)
+                    assert any(e['type']=='yunpiangao.test.missing-session' and e['sessionID']==sid for e in events())
+                    assert not (workspace/'completed').exists()
+            elif name in ['child-deleted','child-missed-delete']:
                 launched=next(e for e in events() if e['type']=='session.tool.success' and e['sessionID']==sid and e['id']=='call_1')
                 child_id=json.loads(launched['content'][0]['text'])['handle']['executionID']
                 api('DELETE',f'/api/session/{child_id}')
@@ -163,7 +169,7 @@ def run_case(name):
                 api('DELETE',f'/api/session/{form["sessionID"]}/form/{form["id"]}')
                 wait(lambda:any(e['type']=='form.cancelled' and e['id']==form['id'] for e in events()))
             release.set();(workspace/'release').touch();completed_at.append(time.monotonic())
-            if name=='process-deleted':
+            if name in ['process-deleted','process-missed-delete']:
                 wait(lambda:(workspace/'completed').exists())
                 time.sleep(1.3)
                 assert primary==2,primary
@@ -179,7 +185,7 @@ def run_case(name):
                 assert len(notifications)==(0 if name.endswith('input') or name=='process-external-interrupt' else 2 if name in ['process-timeout','child-permission'] else 1),notifications
                 results=[json.loads(m['text'].split('\n',1)[1]) for m in notifications]
                 reasons=[result['reason'] for result in results]
-                expected_reasons=[] if name.endswith('input') or name=='process-external-interrupt' else ['timeout','succeeded'] if name=='process-timeout' else ['input_required','succeeded'] if name=='child-permission' else ['failed'] if name=='process-failure' else ['cancelled'] if name.endswith('cancel') or name=='child-deleted' else ['input_required'] if name in ['child-question','child-websearch'] else ['succeeded']
+                expected_reasons=[] if name.endswith('input') or name=='process-external-interrupt' else ['timeout','succeeded'] if name=='process-timeout' else ['input_required','succeeded'] if name=='child-permission' else ['failed'] if name=='process-failure' else ['cancelled'] if name.endswith('cancel') or name in ['child-deleted','child-missed-delete'] else ['input_required'] if name in ['child-question','child-websearch'] else ['succeeded']
                 assert reasons==expected_reasons,reasons
                 if name.startswith('child-nested') and name.endswith('cancel'):
                     wait(lambda:(workspace/'child-completed').exists())
@@ -188,7 +194,7 @@ def run_case(name):
                     child_id=json.loads(launched['content'][0]['text'])['handle']['executionID']
                     child_data=api('GET',f'/api/experimental/session/{child_id}/export?sanitize=false')['data']
                     assert not any(m['type']=='synthetic' and m.get('metadata',{}).get('source')=='yunpiangao.wait' for m in child_data['messages'])
-                if name in ['child-deleted','process-external-interrupt']:
+                if name in ['child-deleted','child-missed-delete','process-external-interrupt']:
                     warnings=(root/'server.log').read_text(errors='replace').count('任务状态或接续请求暂未完成')
                     assert warnings==0,warnings
                 if name=='process-external-interrupt':wait(lambda:(workspace/'completed').exists())
@@ -218,4 +224,4 @@ def run_case(name):
 
 
 if __name__=='__main__':
-    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt']:run_case(case)
+    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt','process-missed-delete','child-missed-delete']:run_case(case)
