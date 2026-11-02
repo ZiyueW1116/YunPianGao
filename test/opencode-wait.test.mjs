@@ -74,7 +74,7 @@ test("宿主中断事件晚到仍不撤销等待；实际接续使用固定的 s
     assert.match(f.resumes[0].text, /合成子任务结果/)
     assert.match(event.system[0].text, /deadline/)
   } finally { await f.plugin.close() }
-  assert.equal(f.disposed(), 2)
+  assert.equal(f.disposed(), f.hooks.size + 1)
 })
 
 test("流结束后复核完整工具列表，不中断同一步晚到的其他工具", async () => {
@@ -593,4 +593,60 @@ test("旧读取快照晚于新停车时不取消新等待，旧中断查询也�
     assert.equal(JSON.parse(child.system[0].text.split("\n", 2)[1]).waits.at(-1).state, "waiting")
     assert.equal(JSON.parse(parent.system[0].text.split("\n", 2)[1]).tasks[0].status, "working")
   } finally { resolveOld?.({ id: "child", time: {} }); await f.plugin.close() }
+})
+
+test("子任务压缩前复核并保留原回答终态，后续控制项不能覆盖", async () => {
+  for (const outcome of ["succeeded", "failed"]) for (const control of ["succeeded", "failed"]) {
+    const f = await fixture()
+    try {
+      await f.plugin.reconcile()
+      f.setChild(outcome, [
+        { id: "original-answer", type: "assistant", finish: outcome === "failed" ? "error" : "stop", time: { completed: 3 }, content: [{ type: "text", text: "原任务结果" }], ...(outcome === "failed" ? { error: { message: "原任务失败" } } : {}) },
+        { id: "original-idle", type: "idle", outcome, time: { created: 3 } },
+      ], 3)
+      await f.hooks.get("compaction")?.({ sessionID: "child" })
+      f.setChild(control, [
+        { id: "compacted", type: "compaction", status: "completed", metadata: { keepID: "original-answer", recent: "[Assistant]: 原任务结果" }, time: { created: 4 } },
+        { id: "control-idle", type: "idle", outcome: control, time: { created: 4 } },
+      ], 4)
+      await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+      await until(() => f.resumes.length === 1)
+      assert.equal(f.resumes[0].metadata.reason, outcome)
+      assert.match(f.resumes[0].text, /原任务结果/)
+      if (outcome === "failed") assert.match(f.resumes[0].text, /原任务失败/)
+    } finally { await f.plugin.close() }
+  }
+})
+
+test("预生成摘要替换后只剩文本时请求宿主确认，不把控制项终态当任务结果", async () => {
+  for (const outcome of ["succeeded", "failed"]) {
+    const f = await fixture()
+    try {
+      await f.plugin.reconcile()
+      f.setChild(outcome, [
+        { id: "warm-compaction", type: "compaction", status: "completed", metadata: { keepID: "previous-answer", recent: "[Assistant]: 保留的回答文本" }, time: { created: 3 } },
+        { id: "control-idle", type: "idle", outcome, time: { created: 3 } },
+      ], 3)
+      await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+      await until(() => f.resumes.length === 1)
+      assert.equal(f.resumes[0].metadata.reason, "input_required")
+      assert.match(f.resumes[0].text, /压缩后无法复核原任务结果，需要在宿主确认/)
+    } finally { await f.plugin.close() }
+  }
+})
+
+test("压缩回调跳过已请求取消的子任务，避免等待当前压缩清理", async () => {
+  const f = await fixture()
+  let release
+  try {
+    await f.plugin.reconcile()
+    f.ctx.session.interrupt = async () => new Promise((resolve) => { release = () => resolve({ interrupted: true }) })
+    const cancelling = f.tools.get("cancel_task").execute({ handle: f.handle.id }, f.context)
+    await until(() => release)
+    assert.equal(typeof f.hooks.get("compaction"), "function")
+    const done = await Promise.race([f.hooks.get("compaction")({ sessionID: "child" }).then(() => true), sleep(50).then(() => false)])
+    assert.equal(done, true)
+    f.ctx.session.interrupt = async () => ({ interrupted: false })
+    release(); await cancelling
+  } finally { release?.(); await f.plugin.close() }
 })

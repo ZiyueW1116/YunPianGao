@@ -168,8 +168,8 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       await track(Promise.resolve().then(() => task.source.cancel(controller.signal)))
       await refresh(task)
     },
-    async refresh() {
-      await Promise.all([...tasks.values()].map(refresh))
+    async refresh(handleID?: string) {
+      await Promise.all([...tasks.values()].filter((task) => handleID === undefined || task.handle.id === handleID).map(refresh))
     },
     snapshot(sessionID: string) {
       return copy({ tasks: [...tasks.values()].filter((task) => task.handle.sessionID === sessionID).map(({ handle, snapshot }) => ({ handle, ...snapshot })), waits: [...waits.values()].filter((wait) => wait.record.sessionID === sessionID).map((wait) => wait.record) })

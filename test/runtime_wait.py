@@ -6,7 +6,8 @@ from runtime import ROOT, SUMMARY, wait
 
 def run_case(name):
     logical_child=name in ['child-nested-compact','child-nested-compact-failure','child-nested-provider-error','child-nested-length','child-nested-compact-cancel']
-    failed_child=name in ['child-nested-provider-error','child-nested-length']
+    terminal_compact=name in ['child-provider-fail-compact','child-provider-fail-compact-failure']
+    failed_child=name in ['child-nested-provider-error','child-nested-length','child-provider-fail-compact','child-provider-fail-compact-failure']
     with tempfile.TemporaryDirectory(prefix='yunpiangao-wait-') as td:
         root=Path(td).resolve();workspace=root/'workspace';workspace.mkdir()
         for folder in ['config','data','state','cache']:(root/folder).mkdir()
@@ -33,7 +34,7 @@ def run_case(name):
                 calls.append({'kind':kind,'child':child,'at':time.monotonic()})
                 tool=None;text='合成任务已接续。'
                 if kind=='compaction':
-                    if name=='child-nested-compact-failure':
+                    if name in ['child-nested-compact-failure','child-provider-fail-compact-failure']:
                         self.send_response(400);self.send_header('Content-Type','application/json');self.end_headers()
                         self.wfile.write(b'{"error":{"message":"synthetic compaction failure","type":"invalid_request_error"}}');return
                     if name in ['process-external-interrupt','child-nested-missed-interrupt']:compacting.set();compaction_release.wait(15)
@@ -53,7 +54,7 @@ def run_case(name):
                     else:
                         if logical_child:answer_waiting.set();answer_release.wait(15)
                         else:release.wait(15)
-                        if name=='child-nested-provider-error':
+                        if name in ['child-nested-provider-error','child-provider-fail-compact','child-provider-fail-compact-failure']:
                             self.send_response(400);self.send_header('Content-Type','application/json');self.end_headers()
                             self.wfile.write(b'{"error":{"message":"synthetic child provider failure","type":"invalid_request_error"}}');return
                         completed_at.append(time.monotonic());text='SYNTHETIC_CHILD_DONE'
@@ -93,8 +94,8 @@ def run_case(name):
                 'providers':{'synthetic':{'name':'本地合成替身','package':'@opencode/ai/providers/openai-compatible',
                 'settings':{'baseURL':f'http://127.0.0.1:{provider.server_port}/v1','apiKey':'synthetic-only'},
                 'models':{'synthetic':{'limit':{'context':600000,'output':384000}}}}}}
-        if name in ['process-missed-delete','child-missed-delete','child-nested-missed-interrupt']:
-            config['plugins'][1]={'package':str(ROOT/'test/disconnected'),'options':{'events':str(root/'events.jsonl'),'dropSecondInterrupt':name=='child-nested-missed-interrupt'}}
+        if name in ['process-missed-delete','child-missed-delete','child-nested-missed-interrupt'] or terminal_compact:
+            config['plugins'][1]={'package':str(ROOT/'test/disconnected'),'options':{'events':str(root/'events.jsonl'),'dropSecondInterrupt':name=='child-nested-missed-interrupt','dropChildTerminalForCompaction':terminal_compact}}
         if name=='child-compact':
             config['compaction']={'auto':True,'keep':{'tokens':0},'buffer':60000}
             config['experimental']={'background_compaction':False}
@@ -128,6 +129,14 @@ def run_case(name):
                 handle=json.loads(launched['content'][0]['text'])['handle']
                 if handle['kind']=='process':os.kill(int(handle['executionID'].rsplit(':',1)[1]),0)
                 else:assert api('GET',f'/api/session/{handle["executionID"]}')['data'].get('outcome') is None
+            elif terminal_compact:
+                launched=next(e for e in events() if e['type']=='session.tool.success' and e['sessionID']==sid and e['id']=='call_1')
+                child_id=json.loads(launched['content'][0]['text'])['handle']['executionID']
+                release.set()
+                wait(lambda:any(e['type']=='session.execution.failed' and e['sessionID']==child_id for e in events()))
+                api('POST',f'/api/session/{child_id}/compact',{})
+                wait(lambda:any(e['type']==('session.compaction.ended' if name=='child-provider-fail-compact' else 'session.compaction.failed') and e['sessionID']==child_id for e in events()))
+                wait(resumed.is_set)
             elif logical_child:
                 wait(lambda:any(e['type']=='session.execution.interrupted' and e['sessionID']!=sid for e in events()))
                 launched=next(e for e in events() if e['type']=='session.tool.success' and e['sessionID']==sid and e['id']=='call_1')
@@ -227,6 +236,13 @@ def run_case(name):
                 reasons=[result['reason'] for result in results]
                 expected_reasons=[] if name.endswith('input') or name=='process-external-interrupt' else ['timeout','succeeded'] if name=='process-timeout' else ['input_required','succeeded'] if name=='child-permission' else ['failed'] if name=='process-failure' or failed_child else ['cancelled'] if name.endswith('cancel') or name in ['child-deleted','child-missed-delete','child-nested-missed-interrupt'] else ['input_required'] if name in ['child-question','child-websearch'] else ['succeeded']
                 assert reasons==expected_reasons,reasons
+                if terminal_compact:
+                    child_data=api('GET',f'/api/experimental/session/{child_id}/export?sanitize=false')['data']
+                    assistant=next(m for m in child_data['messages'] if m['type']=='assistant')
+                    assert assistant['error']['type']=='provider.invalid-request'
+                    dropped=[e['nativeType'] for e in events() if e['type']=='yunpiangao.test.dropped-execution' and e['sessionID']==child_id]
+                    assert dropped==['session.execution.failed','session.execution.started','session.execution.succeeded'],dropped
+                    assert results[-1]['snapshot']['error']
                 if name.startswith('child-nested') and (name.endswith('cancel') or name=='child-nested-missed-interrupt'):
                     wait(lambda:(workspace/'child-completed').exists())
                     assert sum(c['kind']=='primary' and c['child'] for c in calls)==2,calls
@@ -276,4 +292,4 @@ def run_case(name):
 
 
 if __name__=='__main__':
-    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt','process-missed-delete','child-missed-delete','child-nested-compact','child-nested-compact-failure','child-nested-provider-error','child-nested-length','child-nested-compact-cancel','child-nested-missed-interrupt']:run_case(case)
+    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt','process-missed-delete','child-missed-delete','child-nested-compact','child-nested-compact-failure','child-nested-provider-error','child-nested-length','child-nested-compact-cancel','child-nested-missed-interrupt','child-provider-fail-compact','child-provider-fail-compact-failure']:run_case(case)

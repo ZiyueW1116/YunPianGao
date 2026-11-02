@@ -58,6 +58,8 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 `stopWaits(sessionID, waitID?)` 强制结束该 owner 已注册的等待，停止重试并向在途投递传递取消信号，不取消底层任务；指定 `waitID` 时只收尾该次等待。已经确定的结束原因保留，尚未结束的等待记录为 `interrupted`。删除 owner、取消子任务时停止该 owner 的全部等待；停车失败只收尾本次等待，不能影响后来注册的等待。已经被宿主接纳的输入不能撤回。
 
+`refresh(handleID?)` 复核已注册任务；传入 handle 时只查询该任务，省略时复核全部任务。
+
 `snapshot(sessionID)` 返回结构化任务与等待副本，包含 handle、执行标识、期限、状态、恢复原因及结果。宿主应把依赖状态接入后续上下文，不能仅依赖可能被压缩的聊天文本。OpenCode 的系统上下文只注入依赖元数据；原始输出通过工具结果或 synthetic 输入传递，需要时可以再次等待同一 handle 获取缓存的终态结果。
 
 `close()` 解除订阅、停止定时器、取消本地请求并等待其退出，包括已发起的 `cancel` 请求；关闭本身不调用任务的 `cancel`。端口的异步操作必须响应取消信号。状态、任务结果和已结束等待保留到该 runtime 实例被释放，不提供跨重启恢复。
@@ -68,9 +70,11 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，`shell` 的 deny/ask 不约束它；未匹配 `yunpiangao.process` 规则时，宿主默认 allow，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
 
-子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版子会话不得再次调用 `start_subagent`，可以调用 `start_process` 和 `wait_for`。输入接纳状态保存在插件内，子会话压缩移除原始输入后仍可读取完成结果。
+子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版子会话不得再次调用 `start_subagent`，可以调用 `start_process` 和 `wait_for`。输入接纳状态保存在插件内，不依赖可能被压缩移除的原始输入。
 
-子会话内部使用过 `wait_for` 时，原生 compact 等控制项的成功或失败不代表逻辑任务结束。内部等待结果投递后，还须出现新的完整 assistant 回答及其后的第一个原生 idle 才确认终态，后续控制项的成功、失败或中断不覆盖该结果；停车关联中的 assistant ID 用于排除被中断的原等待回答，不要求回答时间严格大于 `idle`。新回答后的首个 idle 为 `failed` 时，返回该轮失败及错误。`tool-calls` 和 `length` 仍可能续跑；2.1.4 连续三次 `length` 后以 `output-limit` 失败结束，返回该错误。
+可见历史中的完整 assistant 回答及其后的第一个原生 idle 用于确认子任务终态，后续控制项的成功、失败或中断不覆盖该结果。子会话内部使用过 `wait_for` 时，原生 compact 等控制项的成功或失败不代表逻辑任务结束；内部等待结果投递后，还须出现新的完整回答及其后的 idle。停车关联中的 assistant ID 用于排除被中断的原等待回答，不要求回答时间严格大于 `idle`。新回答后的首个 idle 为 `failed` 时，返回该轮失败及错误。`tool-calls` 和 `length` 仍可能续跑；2.1.4 连续三次 `length` 后以 `output-limit` 失败结束，返回该错误。
+
+生成新摘要时，公开 `compaction` hook 在窗口替换前仅复核正在压缩且未请求取消的子任务，将已确认的终态保留在现有 runtime 中，不等待当前压缩自身的清理。2.1.4 的插件 `session.context` 只返回当前窗口，没有完整历史查询接口。宿主复用预生成摘要时不会再次调用该 hook；`keepID` 保留尾部也只重建为摘要中的文本，不还原 assistant 错误与 idle。若原任务终态未被缓存，可见窗口又只剩压缩及其控制项终态，插件返回 `input_required` 和“压缩后无法复核原任务结果，需要在宿主确认”，不把控制项成功或失败作为原任务结果。已有内部等待且尚无新完成回答时仍保持 `working`；上述复核不取消底层任务。
 
 执行事件及 session 查询用于观察结果，`permission.list`、运行中的 `question` 工具，以及 `form.created` 事件用于识别介入需求；表单经 `form.replied` 或 `form.cancelled` 清除，覆盖原生 `websearch` 的提供者选择表单。授权或表单在宿主 UI 中处理，插件不自动批准。2.1.4 的公开插件接口没有表单列表查询，断线漏掉表单创建或关闭事件时，无法保证恢复当前表单状态；权限与 `question` 仍可由查询复核。
 

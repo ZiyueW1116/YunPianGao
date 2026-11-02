@@ -7,7 +7,7 @@ import { createWaitRuntime, type TaskSnapshot } from "../wait.js"
 type Context = Plugin.Context
 type SessionID = Parameters<Context["session"]["get"]>[0]["sessionID"]
 type Event = Awaited<ReturnType<Context["event"]["subscribe"]>> extends AsyncIterable<infer T> ? T : never
-type Child = { changed: Set<() => void>; accepted: boolean; launchError?: string; cancelRequested?: boolean; deletedAt?: number; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
+type Child = { changed: Set<() => void>; accepted: boolean; handleID?: string; launchError?: string; cancelRequested?: boolean; deletedAt?: number; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
 const textResult = (value: unknown) => ({ content: JSON.stringify(value), metadata: { yunpiangao: true } })
 const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, additionalProperties: false })
 const string = { type: "string", minLength: 1 }
@@ -105,7 +105,7 @@ export async function setupWaitTools(ctx: Context) {
     let failure = answer?.type === "assistant" ? answer.error : undefined
     const ownWait = runtime.snapshot(childID).waits.at(-1)
     // 控制项也会产生 idle；新回答之后的第一个 idle 确认其终态，后续控制项不能覆盖。
-    const completed = ownWait?.state === "delivered" && answer?.type === "assistant" && answer.time.completed && answer.id !== parked?.messageID
+    const completed = (!ownWait || ownWait.state === "delivered") && answer?.type === "assistant" && answer.time.completed && answer.id !== parked?.messageID
       ? messages.slice(messages.indexOf(answer) + 1).find((message) => message.type === "idle") : undefined
     const finalAnswer = answer?.type === "assistant" && answer.finish !== undefined && !["tool-calls", "length"].includes(answer.finish)
     if (completed && (completed.outcome === "failed" || (completed.outcome === "succeeded" && finalAnswer))) {
@@ -120,6 +120,8 @@ export async function setupWaitTools(ctx: Context) {
     }
     // 新会话只有这次任务，输入接纳状态独立于可能被压缩移除的原始消息。
     if (outcome && finishedAt) {
+      if (outcome !== "interrupted" && !answer && messages.some((message) => message.type === "compaction" && message.status === "completed"))
+        return { status: "input_required", intervention: { message: "压缩后无法复核原任务结果，需要在宿主确认。" } }
       const status = outcome === "succeeded" ? "succeeded" : outcome === "failed" ? "failed" : "cancelled"
       if (status === "cancelled") runtime.stopWaits(childID)
       return { status, finishedAt, result: answer?.type === "assistant" ? answer.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "", ...(failure ? { error: failure.message } : {}) }
@@ -208,6 +210,7 @@ export async function setupWaitTools(ctx: Context) {
               await request(signal, () => ctx.session.interrupt({ sessionID: session.id }, { signal }))
             },
           })
+          child.handleID = handle.id
           try {
             await ctx.session.prompt({ sessionID: session.id, text: input.prompt }, { signal: lifetime.signal })
             child.accepted = true
@@ -289,6 +292,11 @@ export async function setupWaitTools(ctx: Context) {
         waits: state.waits.map(({ snapshot: _snapshot, ...record }) => record),
       }
       if (state.tasks.length) event.system.push({ type: "text", text: `云片糕任务运行时状态（以此状态复核摘要中的等待依赖；新用户输入优先；需要任务结果时可再次等待同一 handle）：\n${JSON.stringify(dependencies)}` })
+    }))
+    registrations.push(await ctx.session.hook("compaction", async (event) => {
+      const child = children.get(event.sessionID)
+      // 窗口替换前缓存该任务终态；取消复核会等待原生清理，不能在压缩回调中等待自己。
+      if (child?.handleID && !child.cancelRequested) await runtime.refresh(child.handleID)
     }))
     return {
       onInput(sessionID: string) {

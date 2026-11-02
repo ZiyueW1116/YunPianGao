@@ -265,3 +265,19 @@ test("强停止 owner 等待覆盖未激活、重试和在途投递，不取消�
     } finally { release?.(); await f.runtime.close() }
   }
 })
+
+test("定向复核仅读取指定任务", async () => {
+  const reads = [0, 0]
+  const runtime = createWaitRuntime({ async resume() {} })
+  const handles = reads.map((_, i) => runtime.register("parent", "subagent", `child-${i}`, {
+    async read() { reads[i]++; return { status: "working" } },
+    async cancel() {},
+  }))
+  try {
+    await runtime.refresh()
+    const before = [...reads]
+    await runtime.refresh(handles[0].id)
+    assert.equal(reads[0], before[0] + 1)
+    assert.equal(reads[1], before[1])
+  } finally { await runtime.close() }
+})

@@ -28,7 +28,7 @@ test("事件流结束或断开时取消待执行计划，卸载仍释放全部�
     await new Promise((resolve) => setTimeout(resolve, 80))
     assert.equal(reads, 0)
     await cleanup()
-    assert.equal(disposed, 5)
+    assert.equal(disposed, 6)
   }
 })
 
