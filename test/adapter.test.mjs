@@ -10,6 +10,7 @@ test("事件流结束或断开时取消待执行计划，卸载仍释放全部�
     const ctx = {
       options: { idleDelayMs: 50 },
       location: { directory: "synthetic-workspace" },
+      tool: { async transform() { return { async dispose() { disposed += 1 } } } },
       session: {
         async hook() { return { async dispose() { disposed += 1 } } },
         async get() { reads += 1 },
@@ -27,7 +28,7 @@ test("事件流结束或断开时取消待执行计划，卸载仍释放全部�
     await new Promise((resolve) => setTimeout(resolve, 80))
     assert.equal(reads, 0)
     await cleanup()
-    assert.equal(disposed, 3)
+    assert.equal(disposed, 5)
   }
 })
 
@@ -41,4 +42,23 @@ test("部分钩子注册失败时释放已经注册的钩子", async () => {
     } },
   }), /合成注册失败/)
   assert.equal(disposed, 1)
+})
+
+test("任务事件订阅断开后重新订阅，卸载能结束重连等待", async () => {
+  let subscriptions = 0
+  const registration = { async dispose() {} }
+  const cleanup = await adapter.setup({
+    options: {},
+    tool: { async transform() { return registration } },
+    session: { async hook() { return registration } },
+    event: { async *subscribe({ signal }) {
+      subscriptions++
+      if (subscriptions === 1) throw new Error("合成连接断开")
+      await new Promise((resolve) => { if (signal.aborted) resolve(); else signal.addEventListener("abort", resolve, { once: true }) })
+    } },
+  })
+  try {
+    for (let i = 0; i < 100 && subscriptions < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(subscriptions, 2)
+  } finally { await cleanup() }
 })

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import type { SessionRequest } from "@opencode/plugin/promise/session"
 import { createYunPianGao, type Options } from "../scheduler.js"
+import { setupWaitTools } from "./opencode-wait.js"
 
 const headings = ["## Objective", "## Requirements", "## Decisions", "## Work State", "## Next Move", "## Relevant Files", "## Important Context"]
 const summaryPrompt = `请把以上对话整理为供后续 agent 继续工作的摘要。保留用户目标、要求、已作决定、完成事项、未完成事项和关键标识；后续消息优先于旧信息。保留精确路径和错误信息，区分已验证事实与推测。不要继续任务，不要调用工具。只返回摘要，完整使用以下标题：\n${headings.join("\n")}`
@@ -47,15 +48,20 @@ const adapter: Plugin.Plugin = {
     }, ctx.options as Options)
 
     let watching: Promise<void> = Promise.resolve()
+    let waiting: Awaited<ReturnType<typeof setupWaitTools>> | undefined
     const close = async () => {
       eventController.abort()
+      await waiting?.close()
       await engine.close()
       await watching
       for (const registration of registrations.reverse()) await registration.dispose()
       preparing.clear()
     }
     try {
-      registrations.push(await ctx.session.hook("prompt", (event) => engine.onInput(event.sessionID)))
+      registrations.push(await ctx.session.hook("prompt", (event) => {
+        engine.onInput(event.sessionID)
+        waiting?.onInput(event.sessionID)
+      }))
       registrations.push(await ctx.session.hook("generate", (event) => {
         const job = preparing.get(event.sessionID)
         const last = event.messages.at(-1)
@@ -69,20 +75,29 @@ const adapter: Plugin.Plugin = {
         const summary = engine.takePrepared(event.sessionID, fingerprint(event))
         if (summary !== undefined) event.result = { summary }
       }))
+      waiting = await setupWaitTools(ctx)
       watching = (async () => {
-        for await (const event of ctx.event.subscribe({ signal: eventController.signal })) {
-          if (event.type === "session.execution.started") engine.onExecution(event.data.sessionID, "started")
-          else if (event.type === "session.execution.succeeded") engine.onExecution(event.data.sessionID, "succeeded")
-          else if (event.type === "session.execution.failed") engine.onExecution(event.data.sessionID, "failed")
-          else if (event.type === "session.execution.interrupted") engine.onExecution(event.data.sessionID, "interrupted")
-        }
-      })().catch(() => {}).then(async () => {
-        if (!eventController.signal.aborted) {
-          eventController.abort()
+        while (!eventController.signal.aborted) {
+          try {
+            for await (const event of ctx.event.subscribe({ signal: eventController.signal })) {
+              waiting.onEvent(event)
+              if (event.type === "session.execution.started") engine.onExecution(event.data.sessionID, "started")
+              else if (event.type === "session.execution.succeeded") engine.onExecution(event.data.sessionID, "succeeded")
+              else if (event.type === "session.execution.failed") engine.onExecution(event.data.sessionID, "failed")
+              else if (event.type === "session.execution.interrupted") engine.onExecution(event.data.sessionID, "interrupted")
+            }
+          } catch { /* 等待任务由查询继续复核，随后重连事件流。 */ }
+          if (eventController.signal.aborted) return
           await engine.close()
-          console.warn("云片糕（YunPianGao）事件订阅已停止；已取消本地定时器和准备请求。请重新加载插件。")
+          console.warn("云片糕（YunPianGao）事件订阅中断；空闲压缩已停止，任务等待继续复核并重连。")
+          await waiting.reconcile()
+          await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); eventController.signal.removeEventListener("abort", done); resolve() }
+            const timer = setTimeout(done, 500)
+            eventController.signal.addEventListener("abort", done, { once: true })
+          })
         }
-      })
+      })()
       return close
     } catch (error) {
       await close()

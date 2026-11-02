@@ -1,7 +1,7 @@
 {
   "name": "@ziyuew1116/yunpiangao",
   "version": "0.1.0",
-  "description": "云片糕：在 Agent 执行间隙预备并提交上下文压缩的调度器",
+  "description": "云片糕：Agent 空闲压缩与基于任务 handle 的等待接续",
   "type": "module",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/ZiyueW1116/YunPianGao.git" },
@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
-    "test:runtime": "npm run build && python3 test/runtime.py",
+    "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build"
   },

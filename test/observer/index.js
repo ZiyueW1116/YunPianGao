@@ -9,12 +9,13 @@ export default {
       await ctx.session.hook("http.request", (event) => {
         const headers = new Headers(event.request.headers)
         headers.set("x-yunpiangao-test-kind", event.kind)
+        headers.set("x-yunpiangao-test-session", event.sessionID)
         event.request = new Request(event.request, { headers })
       }),
     ]
     const watching = (async () => {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
-        if (/^session\.(execution\.|compaction\.|step\.)/.test(event.type))
+        if (/^session\.(execution\.|compaction\.|step\.|tool\.|inbox\.)/.test(event.type) || event.type === "permission.asked")
           appendFileSync(ctx.options.events, JSON.stringify({ type: event.type, ...event.data }) + "\n")
       }
     })().catch((error) => { if (!abort.signal.aborted) throw error })

@@ -33,3 +33,47 @@
 核心以文本传递摘要。需要加密、不透明或结构化 replacement window 的 Harness 须实现并验证对应端口；provider 原生对象不能直接作为文本摘要提交。
 
 OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核模型、系统指令和消息历史。摘要提示词、工具定义和输出预算见 [验证文档](validation.md)。
+
+## 任务等待
+
+`createWaitRuntime(port, { pollIntervalMs })` 创建独立于压缩调度的进程内 runtime。默认查询间隔为 500 毫秒；等待与压缩的接口、状态和取消操作互相独立。
+
+### 任务与等待接口
+
+`register(sessionID, kind, executionID, source)` 注册具体执行，返回 `TaskHandle`。`kind` 为 `process` 或 `subagent`；`executionID` 必须关联到这次执行，不能使用可重复启动任务的名称。handle 只能由所属 session 等待或取消。
+
+`TaskSource` 提供以下能力：
+
+- `read(signal)`：返回当前 `TaskSnapshot`。状态为 `working`、`input_required`、`succeeded`、`failed` 或 `cancelled`，可附带结果、错误、介入请求与完成时间。
+- `subscribe(changed)`：可选事件订阅，状态变化时触发复核，返回解除订阅函数。事件可能重复或遗漏，runtime 在等待期间仍按间隔调用 `read`。
+- `cancel(signal)`：独立请求取消底层任务。请求被接纳不等于任务已经结束，最终状态仍以 `read` 为准。
+
+`begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
+
+成功、失败、取消、介入与超时竞争同一个状态转换：`waiting → ready → delivered`。第一次结束原因确定后，不再被迟到的事件或超时覆盖。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
+
+`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳失败或响应丢失时，runtime 以相同标识重试；端口不能每次创建一条新输入。状态通知本身不能替代接续。
+
+`onInput(sessionID)` 或 `onInterrupt(sessionID)` 结束尚未完成的等待，分别记录 `user_input` 或 `interrupted`，不再调用 `resume`；输入与中断的后续执行由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
+
+`snapshot(sessionID)` 返回结构化任务与等待副本，包含 handle、执行标识、期限、状态、恢复原因及结果。宿主应把依赖状态接入后续上下文，不能仅依赖可能被压缩的聊天文本。OpenCode 的系统上下文只注入依赖元数据；原始输出通过工具结果或 synthetic 输入传递，需要时可以再次等待同一 handle 获取缓存的终态结果。
+
+`close()` 解除订阅、停止定时器、取消本地请求并等待其退出，不调用任务的 `cancel`。端口的异步操作必须响应取消信号。状态、任务结果和已结束等待保留到该 runtime 实例被释放，不提供跨重启恢复。
+
+### OpenCode 2.1.4
+
+适配器使用公开工具注册接口添加四个工具。`wait_for.timeout` 使用秒，核心的 `timeoutMs` 使用毫秒；`CompactionPort.wait` 仍只等待压缩控制项。
+
+后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
+
+子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版禁止子会话通过此工具嵌套启动任务。执行事件及 session 查询用于观察结果，`permission.list` 和运行中的 `question` 工具用于识别介入需求；授权或表单在宿主 UI 中处理，插件不自动批准。取消使用原生中断，不删除子会话或宿主排队输入。
+
+源码核对版本为 tag `v2.1.4`，commit `68bc26b7da1990ce10ffecfbc1e09eb13aa5d824`。影响接续的宿主能力包括：
+
+- [Promise 适配器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/plugin/src/promise/adapter.ts) 提供工具执行的 `AbortSignal`；公开 session API 没有停放执行或恢复任意工具栈的操作。进程内 API 未转发 `RequestOptions.signal`，插件以取消竞争结束本地等待，宿主已接纳的操作可能继续。
+- [执行协调器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/run-coordinator.ts) 在中断时清除旧唤醒，在清理期间接纳新唤醒。[`interrupt({resume:true})`](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/execution.ts) 保留并发到达的 steering 输入。适配器确认中断后才激活等待。
+- 工具可在模型流结束前执行。适配器等待 assistant 的 `time.streamed`，再复核完整工具列表；同一步有其他工具时拒绝暂停。输入版本检查阻止模型流期间新输入到达后的过期等待意图。
+- [synthetic 输入](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/session.ts) 进入原生 inbox 并触发执行；同一输入 ID 的接纳由[队列](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/inbox.ts) 去重。等待结果使用固定消息 ID，任务状态也通过 `context` hook 注入后续请求，因此压缩后仍可复核依赖。
+- [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
+
+等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
