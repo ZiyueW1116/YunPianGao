@@ -70,9 +70,11 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版子会话不得再次调用 `start_subagent`，可以调用 `start_process` 和 `wait_for`。输入接纳状态保存在插件内，子会话压缩移除原始输入后仍可读取完成结果。
 
+子会话内部使用过 `wait_for` 时，原生 compact 等控制项的成功或失败不代表逻辑任务结束。内部等待结果投递后，还须出现新的完整 assistant 回答及其后的第一个原生 idle 才确认终态，后续控制项的成功、失败或中断不覆盖该结果；停车关联中的 assistant ID 用于排除被中断的原等待回答，不要求回答时间严格大于 `idle`。新回答后的首个 idle 为 `failed` 时，返回该轮失败及错误。`tool-calls` 和 `length` 仍可能续跑；2.1.4 连续三次 `length` 后以 `output-limit` 失败结束，返回该错误。
+
 执行事件及 session 查询用于观察结果，`permission.list`、运行中的 `question` 工具，以及 `form.created` 事件用于识别介入需求；表单经 `form.replied` 或 `form.cancelled` 清除，覆盖原生 `websearch` 的提供者选择表单。授权或表单在宿主 UI 中处理，插件不自动批准。2.1.4 的公开插件接口没有表单列表查询，断线漏掉表单创建或关闭事件时，无法保证恢复当前表单状态；权限与 `question` 仍可由查询复核。
 
-取消子任务先强停止子会话名下已注册的等待与本地投递，再请求原生中断；子会话启动的独立进程不级联取消，后续进程完成或等待期限到达不再触发已停止的接续。插件不删除子会话或宿主排队输入，已经由宿主接纳的 synthetic 输入不能撤回。`cancel_task` 只返回目标 handle 的取消请求回执，不带其他任务结果。
+取消子任务先强停止子会话名下已注册的等待与本地投递，再请求原生中断并等待清理。内部等待期间 compact 已结束而原生中断为 no-op 时，没有真实完成回答的逻辑任务仍标为 `cancelled`；已有真实完成结果则保持该结果。子会话启动的独立进程不级联取消，后续进程完成或等待期限到达不再触发已停止的接续。插件不删除子会话或宿主排队输入，已经由宿主接纳的 synthetic 输入不能撤回。`cancel_task` 只返回目标 handle 的取消请求回执，不带其他任务结果。
 
 收到 owner 删除事件后，插件结束其等待，不调用任务的 `cancel`。断线重连时会查询已注册任务的 owner，即使任务未完成，也能发现漏掉的删除；接续请求确认 owner 不存在时同样结束其等待。仅识别直接包含 `_tag: "Session.NotFoundError"` 且 `sessionID` 对应当前会话的错误，其他查询失败只诊断并保留状态，接续失败继续使用相同消息 ID 重试。
 
@@ -82,7 +84,7 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 - [Promise 适配器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/plugin/src/promise/adapter.ts) 提供工具执行的 `AbortSignal`；公开 session API 没有停放执行或恢复任意工具栈的操作。进程内 API 未转发 `RequestOptions.signal`，插件以取消竞争结束本地等待，宿主已接纳的操作可能继续。
 - [执行协调器](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/run-coordinator.ts) 在中断时清除旧唤醒，在清理期间接纳新唤醒。[`interrupt({resume:true})`](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/execution.ts) 保留并发到达的 steering 输入，但回执只确认接受中断。适配器随后调用公开的 [`session.wait`](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/session.ts) 等待原生执行清理及终态提交完成，再读取 `idle` 并激活接续。该清理请求在插件作用域运行，工具收到取消信号后先返回，不等待该请求，因此不阻塞自身清理。
-- [会话投影](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/projector.ts) 为每次执行终态严格推进 `time.idle`，新执行开始后仍保留上次 `outcome`。适配器只将清理完成后读取的该代次 `interrupted` 视作停车。后续中断事件查询当前 `idle`，不同代次的真实中断会结束仍在进行的等待；异步查询仅作用于当时的停车归属。原生空闲会话的中断操作是 no-op，不产生中断事件，适配器无法据此结束等待。宿主没有原子的执行代次回执；若其他宿主输入在 `session.wait` 完成到读取 `idle` 之间又完成一轮执行，这两次中断的归属仍无法仅凭该回执区分。
+- [会话投影](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/projector.ts) 为每次执行终态严格推进 `time.idle`，新执行开始后仍保留上次 `outcome`。适配器只将清理完成后读取的该代次 `interrupted` 视作停车。后续中断事件查询当前 `idle`，不同代次的真实中断会结束仍在进行的等待；异步查询仅作用于当时的停车归属。原生空闲会话的中断操作是 no-op，已处于 stopping 的执行被重复中断也返回 `false`，均不产生新的中断事件；可以通过新 prompt 结束等待。宿主没有原子的执行代次回执；若其他宿主输入在 `session.wait` 完成到读取 `idle` 之间又完成一轮执行，这两次中断的归属仍无法仅凭该回执区分。
 - 工具可在模型流结束前执行。适配器等待 assistant 的 `time.streamed`，再复核完整工具列表；同一步有其他工具时拒绝暂停。输入版本检查阻止模型流期间新输入到达后的过期等待意图。
 - [synthetic 输入](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/session.ts) 进入原生 inbox 并触发执行；同一输入 ID 的接纳由[队列](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/inbox.ts) 去重。等待结果使用固定消息 ID，任务状态也通过 `context` hook 注入后续请求，因此压缩后仍可复核依赖。
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。

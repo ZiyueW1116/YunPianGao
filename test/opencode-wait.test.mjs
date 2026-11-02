@@ -163,7 +163,10 @@ test("内部停车只忽略同一 idle，started 已到或遗漏均不误读残�
       if (started) f.plugin.onEvent({ type: "session.execution.started", data: { sessionID: "child" } })
       await f.plugin.reconcile()
       assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
-      f.setChild(outcome, undefined, 3)
+      f.setChild(outcome, outcome === "succeeded" ? [
+        { id: "child-final", type: "assistant", finish: "stop", time: { completed: 3 }, content: [{ type: "text", text: "合成子任务结果" }] },
+        { id: "child-idle", type: "idle", outcome, time: { created: 3 } },
+      ] : undefined, 3)
       f.plugin.onEvent({ type: `session.execution.${outcome}`, data: { sessionID: "child" } })
       await until(() => f.resumes.some((r) => r.sessionID === "parent"))
       assert.equal(f.resumes.find((r) => r.sessionID === "parent").metadata.reason, outcome === "succeeded" ? "succeeded" : "cancelled")
@@ -454,4 +457,106 @@ test("卸载取消重连时的 owner 本地复核并等待收尾", async () => {
     await f.plugin.close()
     await reconciling
   } finally { resolveQuery?.({ id: "parent", time: {} }); await f.plugin.close() }
+})
+
+for (const outcome of ["succeeded", "failed"]) test(`内部等待仍在进行时，控制项 ${outcome} 不结束子任务`, async () => {
+  const f = await fixture()
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 150)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    f.setChild(undefined, [{ id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    await sleep(5)
+    f.setChild(outcome, [{ id: "control", type: "compaction", status: outcome === "failed" ? "failed" : "completed", time: { created: 3 } }, { id: "control-idle", type: "idle", outcome, time: { created: 3 } }], 3)
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await f.plugin.reconcile(); await sleep(10)
+    assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
+  } finally { await f.plugin.close() }
+})
+
+for (const completedAt of [2, 1]) test(`内部结果已投递后等待真正回答及其后 idle，回答时间 ${completedAt} 不必大于停车代次`, async () => {
+  const f = await fixture()
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 10)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    f.setChild(undefined, [{ id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    await until(() => f.resumes.some((r) => r.sessionID === "child"))
+    const oldAnswer = { id: context.messageID, type: "assistant", finish: "error", error: { type: "aborted", message: "Step interrupted" }, time: { completed: 2 }, content: [] }
+    const controlIdle = { id: "control-idle", type: "idle", outcome: "failed", time: { created: 3 } }
+    f.setChild("failed", [oldAnswer, { id: "control", type: "compaction", status: "failed", time: { created: 3 } }, controlIdle], 3)
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await f.plugin.reconcile(); await sleep(5)
+    assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
+    const answer = { id: "real-answer", type: "assistant", finish: "stop", time: { created: completedAt }, content: [{ type: "text", text: "真正任务结果" }] }
+    f.setChild("failed", [controlIdle, answer], 3)
+    await f.plugin.reconcile()
+    assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
+    answer.time.completed = completedAt
+    await f.plugin.reconcile()
+    assert.equal(f.resumes.filter((r) => r.sessionID === "parent").length, 0)
+    f.setChild("failed", [answer,
+      { id: "real-idle", type: "idle", outcome: "succeeded", time: { created: completedAt } },
+      { id: "later-control", type: "compaction", status: "failed", time: { created: 4 } },
+      { id: "later-control-idle", type: "idle", outcome: "failed", time: { created: 4 } },
+    ], 4)
+    await f.plugin.reconcile()
+    await until(() => f.resumes.some((r) => r.sessionID === "parent"))
+    const result = f.resumes.find((r) => r.sessionID === "parent")
+    assert.equal(result.metadata.reason, "succeeded")
+    assert.match(result.text, /真正任务结果/)
+    assert.equal(JSON.parse(result.text.split("\n", 2)[1]).snapshot.finishedAt, completedAt)
+  } finally { await f.plugin.close() }
+})
+
+test("compact 后取消内部等待的子任务，原生 interrupt 为 no-op 仍取消逻辑任务", async () => {
+  const f = await fixture()
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 80)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    f.setChild(undefined, [{ id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    await sleep(5)
+    f.setChild("succeeded", [{ id: "control", type: "compaction", status: "completed", time: { created: 3 } }, { id: "control-idle", type: "idle", outcome: "succeeded", time: { created: 3 } }], 3)
+    const interrupt = f.ctx.session.interrupt
+    f.ctx.session.interrupt = async (input) => input.sessionID === "child" ? { interrupted: false } : interrupt(input)
+    await f.plugin.reconcile()
+    await f.tools.get("cancel_task").execute({ handle: f.handle.id }, f.context)
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await until(() => f.resumes.some((r) => r.sessionID === "parent"))
+    assert.equal(f.resumes.find((r) => r.sessionID === "parent").metadata.reason, "cancelled")
+    await sleep(150); await f.plugin.reconcile()
+    assert.equal(f.resumes.filter((r) => r.sessionID === "child").length, 0)
+    const event = { sessionID: "child", system: [] }
+    f.hooks.get("context")(event)
+    assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).tasks[0].status, "succeeded")
+  } finally { await f.plugin.close() }
+})
+
+for (const first of ["succeeded", "failed"]) for (const later of ["succeeded", "failed", "interrupted"]) test(`新回答的首个 idle ${first} 不受后续控制项 ${later} 覆盖`, async () => {
+  const f = await fixture()
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 10)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    f.setChild(undefined, [{ id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    await until(() => f.resumes.some((r) => r.sessionID === "child"))
+    f.setChild(later, [
+      { id: "real-answer", type: "assistant", finish: "stop", time: { completed: 2 }, content: [{ type: "text", text: "真实回答" }] },
+      { id: "real-idle", type: "idle", outcome: first, error: first === "failed" ? { type: "synthetic.failure", message: "合成执行失败" } : undefined, time: { created: 2 } },
+      { id: "later-control", type: "compaction", status: "completed", time: { created: 3 } },
+      { id: "later-idle", type: "idle", outcome: later, time: { created: 4 } },
+    ], 4)
+    await f.tools.get("wait_for").execute({ handle: f.handle.id, timeout: .08 }, f.context)
+    await until(() => f.resumes.some((r) => r.sessionID === "parent"))
+    const result = f.resumes.find((r) => r.sessionID === "parent")
+    assert.equal(result.metadata.reason, first)
+    const snapshot = JSON.parse(result.text.split("\n", 2)[1]).snapshot
+    assert.equal(snapshot.finishedAt, 2)
+    if (first === "failed") assert.equal(snapshot.error, "合成执行失败")
+  } finally { await f.plugin.close() }
 })

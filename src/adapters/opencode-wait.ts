@@ -31,7 +31,7 @@ export async function setupWaitTools(ctx: Context) {
   const children = new Map<string, Child>()
   // 仅记录已注册任务的 owner，供事件重连时复核。
   const owners = new Set<string>()
-  const parking = new Map<string, { idle?: number }>()
+  const parking = new Map<string, { idle?: number; messageID: string }>()
   const inputEpochs = new Map<string, number>()
   const modelEpochs = new Map<string, number>()
   let closed = false
@@ -84,25 +84,44 @@ export async function setupWaitTools(ctx: Context) {
     if (child.launchError) return { status: "failed", error: child.launchError }
     if (!child.accepted) return { status: "working" }
     const sessionID = childID as SessionID
-    if (child.cancelRequested) await request(signal, () => ctx.session.interrupt({ sessionID }, { signal }))
-    // permission.asked 是瞬时事件；断线后从宿主当前待处理请求复核。
-    const permissions = await request(signal, () => ctx.permission.list({ sessionID }, { signal }))
-    if (permissions.length) return { status: "input_required", intervention: { permissions } }
-    if (child.forms.size) return { status: "input_required", intervention: { forms: [...child.forms.values()] } }
+    if (child.cancelRequested) {
+      await request(signal, () => ctx.session.interrupt({ sessionID }, { signal }))
+      await request(signal, () => ctx.session.wait({ sessionID }, { signal }))
+    } else {
+      // permission.asked 是瞬时事件；断线后从宿主当前待处理请求复核。
+      const permissions = await request(signal, () => ctx.permission.list({ sessionID }, { signal }))
+      if (permissions.length) return { status: "input_required", intervention: { permissions } }
+      if (child.forms.size) return { status: "input_required", intervention: { forms: [...child.forms.values()] } }
+    }
     const session = await request(signal, () => ctx.session.get({ sessionID }, { signal }))
     const messages = await request(signal, () => ctx.session.context({ sessionID }, { signal }))
     const answer = messages.findLast((message) => message.type === "assistant")
-    if (answer?.type === "assistant") {
+    if (!child.cancelRequested && answer?.type === "assistant") {
       const question = answer.content.find((part) => part.type === "tool" && part.name === "question" && part.state.status === "running")
       if (question) return { status: "input_required", intervention: { question } }
     }
-    // 原生 outcome 在下一次执行开始后仍保留；只忽略内部停车对应的那一次 idle。
     const parked = parking.get(childID)
-    if (session.outcome === "interrupted" && parked && (parked.idle === undefined || parked.idle === session.time.idle) && !child.cancelRequested) return { status: "working" }
+    let outcome = session.outcome, finishedAt = session.time.idle
+    let failure = answer?.type === "assistant" ? answer.error : undefined
+    const ownWait = runtime.snapshot(childID).waits.at(-1)
+    // 控制项也会产生 idle；新回答之后的第一个 idle 确认其终态，后续控制项不能覆盖。
+    const completed = ownWait?.state === "delivered" && answer?.type === "assistant" && answer.time.completed && answer.id !== parked?.messageID
+      ? messages.slice(messages.indexOf(answer) + 1).find((message) => message.type === "idle") : undefined
+    const finalAnswer = answer?.type === "assistant" && answer.finish !== undefined && !["tool-calls", "length"].includes(answer.finish)
+    if (completed && (completed.outcome === "failed" || (completed.outcome === "succeeded" && finalAnswer))) {
+      outcome = completed.outcome
+      finishedAt = completed.time.created
+      failure = completed.error ?? failure
+    } else {
+      // 原生 outcome 在下一次执行开始后仍保留；只忽略内部停车对应的那一次 idle。
+      if (outcome === "interrupted" && parked && (parked.idle === undefined || parked.idle === finishedAt) && !child.cancelRequested) return { status: "working" }
+      if (ownWait && outcome !== "interrupted")
+        return child.cancelRequested ? { status: "cancelled", finishedAt: Date.now() } : { status: "working" }
+    }
     // 新会话只有这次任务，输入接纳状态独立于可能被压缩移除的原始消息。
-    if (session.outcome && session.time.idle) {
-      const status = session.outcome === "succeeded" ? "succeeded" : session.outcome === "failed" ? "failed" : "cancelled"
-      return { status, finishedAt: session.time.idle, result: answer?.type === "assistant" ? answer.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "", ...(answer?.type === "assistant" && answer.error ? { error: answer.error.message } : {}) }
+    if (outcome && finishedAt) {
+      const status = outcome === "succeeded" ? "succeeded" : outcome === "failed" ? "failed" : "cancelled"
+      return { status, finishedAt, result: answer?.type === "assistant" ? answer.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "", ...(failure ? { error: failure.message } : {}) }
     }
     return { status: "working" }
   }
@@ -219,7 +238,7 @@ export async function setupWaitTools(ctx: Context) {
           context.signal.throwIfAborted()
           if (epoch !== (inputEpochs.get(context.sessionID) ?? 0)) return textResult({ reason: "user_input", instruction: "等待未开始，请先处理新输入。" })
           const record = runtime.begin(context.sessionID, input.handle, Math.ceil((input.timeout ?? 600) * 1000))
-          const parked: { idle?: number } = {}
+          const parked: { idle?: number; messageID: string } = { messageID: context.messageID }
           parking.set(context.sessionID, parked)
           let rejectPause: (error: unknown) => void = () => {}
           const paused = new Promise<void>((resolve, reject) => {
