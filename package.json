@@ -1,0 +1,26 @@
+{
+  "name": "@ziyuew1116/interact",
+  "version": "0.1.0",
+  "description": "在 Agent 执行间隙预备并提交上下文压缩的调度器",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/ZiyueW1116/InterAct.git" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./opencode": { "types": "./dist/adapters/opencode.d.ts", "import": "./dist/adapters/opencode.js" },
+    "./server": { "types": "./dist/adapters/opencode.d.ts", "import": "./server.js" }
+  },
+  "files": ["dist", "server.js", "README.md", "LICENSE", "docs"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:runtime": "npm run build && python3 test/runtime.py",
+    "audit:public": "python3 scripts/audit_public.py",
+    "prepack": "npm run build"
+  },
+  "engines": { "node": ">=22" },
+  "peerDependencies": { "@opencode/plugin": "2.1.4" },
+  "peerDependenciesMeta": { "@opencode/plugin": { "optional": true } },
+  "devDependencies": { "@opencode/plugin": "2.1.4", "@types/node": "22.19.11", "typescript": "5.9.3" }
+}
