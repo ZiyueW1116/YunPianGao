@@ -44,7 +44,7 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 `TaskSource` 提供以下能力：
 
-- `read(signal)`：返回当前 `TaskSnapshot`。状态为 `working`、`input_required`、`succeeded`、`failed` 或 `cancelled`，可附带结果、错误、介入请求与完成时间。
+- `read(signal)`：返回当前 `TaskSnapshot`。状态为 `working`、`input_required`、`succeeded`、`failed` 或 `cancelled`，可附带结果、错误、介入请求与完成时间。载荷须可由 `structuredClone` 复制；通过 OpenCode 工具结果或 synthetic 传递时还须可 JSON 序列化。
 - `subscribe(changed)`：可选事件订阅，状态变化时触发复核，返回解除订阅函数。事件可能重复或遗漏，runtime 在等待期间仍按间隔调用 `read`。
 - `cancel(signal)`：独立请求取消底层任务。请求被接纳不等于任务已经结束，最终状态仍以 `read` 为准。
 
@@ -68,7 +68,7 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 适配器使用公开工具注册接口添加四个工具。`wait_for.timeout` 使用秒，核心的 `timeoutMs` 使用毫秒；`CompactionPort.wait` 仍只等待压缩控制项。
 
-后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，`shell` 的 deny/ask 不约束它；未匹配 `yunpiangao.process` 规则时，宿主默认 allow，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
+后台进程继承环境和工作目录，不经过 shell 解释。启动前调用 `permission.assert`，action 为 `yunpiangao.process`，resource 为可执行文件和参数数组的 JSON。该权限独立于原生 `shell` 规则，`shell` 的 deny/ask 不约束它。默认 Agent 带有 `*` allow 规则，因此通常会匹配并允许；完全没有匹配规则时，`permission.evaluate` 回退为 ask，最终结果按宿主匹配规则决定，部署时应显式配置。最多保留末尾 64 KiB 的 stdout/stderr 合并结果，不接受交互式 stdin。POSIX 下取消向进程组发送 SIGTERM；因该信号退出时标记 `cancelled`，正常退出或其他错误按实际状态记录。忽略 SIGTERM 的进程可能继续运行，不自动强制终止。
 
 子 Agent 使用宿主现有 agent 定义、权限检查与新建子会话接口，每次任务创建独立子会话，不接管既有子会话。子会话按宿主规则继承父会话权限，模型优先采用 agent 设置。首版子会话不得再次调用 `start_subagent`，可以调用 `start_process` 和 `wait_for`。输入接纳状态保存在插件内，不依赖可能被压缩移除的原始输入。
 
@@ -80,7 +80,7 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 
 取消子任务先强停止子会话名下已注册的等待与本地投递，再请求原生中断并等待清理。内部等待期间 compact 已结束而原生中断为 no-op 时，没有真实完成回答的逻辑任务仍标为 `cancelled`；已有真实完成结果则保持该结果。中断事件遗漏时，查询确认的取消终态同样停止子会话本地等待。子会话启动的独立进程不级联取消，后续进程完成或等待期限到达不再触发已停止的接续。插件不删除子会话或宿主排队输入，已经由宿主接纳的 synthetic 输入不能撤回。`cancel_task` 只返回目标 handle 的取消请求回执，不带其他任务结果。
 
-收到 owner 删除事件后，插件结束其等待，不调用任务的 `cancel`。断线重连时会查询已注册任务的 owner，即使任务未完成，也能发现漏掉的删除；接续请求确认 owner 不存在时同样结束其等待。仅识别直接包含 `_tag: "Session.NotFoundError"` 且 `sessionID` 对应当前会话的错误，其他查询失败只诊断并保留状态，接续失败继续使用相同消息 ID 重试。
+收到 owner 删除事件后，插件结束其等待，不调用任务的 `cancel`。断线重连时会查询已注册任务的 owner，即使任务未完成，也能发现漏掉的删除或后续执行中断。复核中断沿用事件路径的停车对象身份与严格递增 idle 判断，旧查询不能结束新等待，不取消底层任务；接续请求确认 owner 不存在时同样结束其等待。仅识别直接包含 `_tag: "Session.NotFoundError"` 且 `sessionID` 对应当前会话的错误，其他查询失败只诊断并保留状态，接续失败继续使用相同消息 ID 重试。
 
 独立进程继续运行；OpenCode 删除会话时会中断并递归删除原生子会话，插件不改变该宿主行为。独立删除运行中的子会话时，删除事件或确定该子会话不存在的查询结果使父 handle 转为 `cancelled`，不再查询已删除会话。
 

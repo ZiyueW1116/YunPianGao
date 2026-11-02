@@ -8,6 +8,7 @@ type Context = Plugin.Context
 type SessionID = Parameters<Context["session"]["get"]>[0]["sessionID"]
 type Event = Awaited<ReturnType<Context["event"]["subscribe"]>> extends AsyncIterable<infer T> ? T : never
 type Child = { changed: Set<() => void>; accepted: boolean; handleID?: string; launchError?: string; cancelRequested?: boolean; deletedAt?: number; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
+// OpenCode 的工具结果与 synthetic 文本通过 JSON 传递，任务载荷须可 JSON 序列化。
 const textResult = (value: unknown) => ({ content: JSON.stringify(value), metadata: { yunpiangao: true } })
 const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, additionalProperties: false })
 const string = { type: "string", minLength: 1 }
@@ -184,13 +185,13 @@ export async function setupWaitTools(ctx: Context) {
         input: schema({ agent: string, prompt: string, description: string }, ["agent", "prompt", "description"]),
         async execute(raw, context) {
           const input = raw as { agent: string; prompt: string; description: string }
-          const parent = await ctx.session.get({ sessionID: context.sessionID }, { signal: context.signal })
+          const parent = await ctx.session.get({ sessionID: context.sessionID })
           if (parent.parentID) throw new ToolError({ message: "首版任务等待不支持嵌套启动子 Agent。" })
           const agent = (await ctx.agent.list()).data.find((agent) => agent.id === input.agent || agent.name === input.agent)
           if (!agent || agent.mode === "primary" || agent.hidden) throw new ToolError({ message: "请选择宿主可用的子 Agent。" })
           await allow(context, "subagent", agent.id)
           context.signal.throwIfAborted()
-          const session = await ctx.session.create({ parentID: context.sessionID, agent: agent.id, model: agent.model ?? parent.model, title: input.description, location: { directory: ctx.location.directory } }, { signal: lifetime.signal })
+          const session = await ctx.session.create({ parentID: context.sessionID, agent: agent.id, model: agent.model ?? parent.model, title: input.description, location: { directory: ctx.location.directory } })
           const child: Child = { changed: new Set(), accepted: false, forms: new Map() }
           children.set(session.id, child)
           owners.add(context.sessionID)
@@ -212,7 +213,7 @@ export async function setupWaitTools(ctx: Context) {
           })
           child.handleID = handle.id
           try {
-            await ctx.session.prompt({ sessionID: session.id, text: input.prompt }, { signal: lifetime.signal })
+            await ctx.session.prompt({ sessionID: session.id, text: input.prompt })
             child.accepted = true
             notifyChild(child)
           } catch {
@@ -332,7 +333,11 @@ export async function setupWaitTools(ctx: Context) {
       reconcile() {
         return track((async () => {
           await Promise.all([...owners].map(async (sessionID) => {
-            try { await request(lifetime.signal, () => ctx.session.get({ sessionID: sessionID as SessionID }, { signal: lifetime.signal })) }
+            const parked = parking.get(sessionID)
+            try {
+              const session = await request(lifetime.signal, () => ctx.session.get({ sessionID: sessionID as SessionID }, { signal: lifetime.signal }))
+              if (parked && parking.get(sessionID) === parked && session.outcome === "interrupted" && session.time.idle !== undefined && parked.idle !== undefined && session.time.idle > parked.idle) runtime.onInterrupt(sessionID)
+            }
             catch (error) {
               if (missingSession(error, sessionID)) endDeletedSession(sessionID)
               else report()

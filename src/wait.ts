@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 export type TaskStatus = "working" | "input_required" | "succeeded" | "failed" | "cancelled"
+/** 包括 result 与 intervention 在内的载荷须可由 structuredClone 复制。 */
 export interface TaskSnapshot {
   status: TaskStatus
   result?: unknown

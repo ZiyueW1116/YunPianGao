@@ -48,7 +48,12 @@ export default {
           return session
         },
         async get(input, options) {
-          try { return await ctx.session.get(input, options) }
+          try {
+            const session = await ctx.session.get(input, options)
+            if (ctx.options.dropSecondInterrupt && (interruptions.get(input.sessionID) ?? 0) >= 2)
+              appendFileSync(ctx.options.events, JSON.stringify({ type: "yunpiangao.test.interrupted-session", sessionID: input.sessionID, outcome: session.outcome, idle: session.time.idle }) + "\n")
+            return session
+          }
           catch (error) {
             if (error?._tag === "Session.NotFoundError" && error.sessionID === input.sessionID)
               appendFileSync(ctx.options.events, JSON.stringify({ type: "yunpiangao.test.missing-session", sessionID: input.sessionID }) + "\n")

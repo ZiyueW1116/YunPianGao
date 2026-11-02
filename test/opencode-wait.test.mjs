@@ -22,7 +22,8 @@ async function fixture() {
       async hook(name, hook) { hooks.set(name, hook); return { async dispose() { disposed++ } } },
       async get({ sessionID }) {
         const outcome = sessionID === "child" ? childOutcome ?? (answer ? "succeeded" : undefined) : parentOutcome
-        return { id: sessionID, ...(outcome ? { outcome } : {}), time: { idle: outcome ? childIdle : undefined } }
+        const idle = sessionID === "child" ? childIdle : 2
+        return { id: sessionID, ...(outcome ? { outcome } : {}), time: { idle: outcome ? idle : undefined } }
       },
       async create() { return { id: "child" } },
       async prompt() { return { id: "child-prompt" } },
@@ -649,4 +650,55 @@ test("压缩回调跳过已请求取消的子任务，避免等待当前压缩�
     f.ctx.session.interrupt = async () => ({ interrupted: false })
     release(); await cancelling
   } finally { release?.(); await f.plugin.close() }
+})
+
+test("重连复核 owner 的新中断结束等待，同代停车 idle 不结束等待", async () => {
+  for (const idle of [2, 3]) {
+    const f = await fixture()
+    try {
+      const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 100)"] }, { ...f.context, id: "owner-process" })
+      const handle = JSON.parse(launched.content).handle
+      await f.tools.get("wait_for").execute({ handle: handle.id }, f.context)
+      await sleep(5)
+      const get = f.ctx.session.get
+      f.ctx.session.get = async (input) => input.sessionID === "parent" ? { id: "parent", outcome: "interrupted", time: { idle } } : get(input)
+      await f.plugin.reconcile()
+      const state = { sessionID: "parent", system: [] }
+      f.hooks.get("context")(state)
+      assert.equal(JSON.parse(state.system[0].text.split("\n", 2)[1]).waits.at(-1).state, idle === 3 ? "delivered" : "waiting")
+      await sleep(150)
+      assert.equal(f.resumes.length, idle === 3 ? 0 : 1)
+      if (idle === 2) assert.equal(f.resumes[0].metadata.reason, "succeeded")
+    } finally { await f.plugin.close() }
+  }
+})
+
+test("重连旧 owner 查询晚于新停车时不结束新等待", async () => {
+  const f = await fixture()
+  let resolveOld
+  try {
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 200)"] }, { ...f.context, id: "owner-process" })
+    const handle = JSON.parse(launched.content).handle
+    await f.tools.get("wait_for").execute({ handle: handle.id }, f.context)
+    await sleep(5)
+    const get = f.ctx.session.get
+    let first = true
+    f.ctx.session.get = async (input) => input.sessionID !== "parent" ? get(input) : first ? (first = false, new Promise((resolve) => { resolveOld = resolve })) : { id: "parent", outcome: "interrupted", time: { idle: 4 } }
+    const reconciling = f.plugin.reconcile()
+    await until(() => resolveOld)
+    f.plugin.onInput("parent")
+    f.hooks.get("context")({ sessionID: "parent", system: [] })
+    const controller = new AbortController()
+    f.ctx.session.interrupt = async () => { controller.abort(); return { interrupted: true } }
+    f.setMessage({ id: "new-owner-wait", type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] })
+    await f.tools.get("wait_for").execute({ handle: handle.id }, { ...f.context, messageID: "new-owner-wait", signal: controller.signal })
+    await sleep(5)
+    resolveOld({ id: "parent", outcome: "interrupted", time: { idle: 3 } })
+    await reconciling
+    const state = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(state)
+    assert.equal(JSON.parse(state.system[0].text.split("\n", 2)[1]).waits.at(-1).state, "waiting")
+    await until(() => f.resumes.length === 1)
+    assert.equal(f.resumes[0].metadata.reason, "succeeded")
+  } finally { resolveOld?.({ id: "parent", time: {} }); await f.plugin.close() }
 })
