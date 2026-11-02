@@ -113,14 +113,15 @@ export async function setupWaitTools(ctx: Context) {
       finishedAt = completed.time.created
       failure = completed.error ?? failure
     } else {
-      // 原生 outcome 在下一次执行开始后仍保留；只忽略内部停车对应的那一次 idle。
-      if (outcome === "interrupted" && parked && (parked.idle === undefined || parked.idle === finishedAt) && !child.cancelRequested) return { status: "working" }
+      // 原生 outcome 可能来自较早快照；只有严格推进的 idle 才属于停车之后的中断。
+      if (outcome === "interrupted" && parked && (parked.idle === undefined || finishedAt === undefined || finishedAt <= parked.idle) && !child.cancelRequested) return { status: "working" }
       if (ownWait && outcome !== "interrupted")
         return child.cancelRequested ? { status: "cancelled", finishedAt: Date.now() } : { status: "working" }
     }
     // 新会话只有这次任务，输入接纳状态独立于可能被压缩移除的原始消息。
     if (outcome && finishedAt) {
       const status = outcome === "succeeded" ? "succeeded" : outcome === "failed" ? "failed" : "cancelled"
+      if (status === "cancelled") runtime.stopWaits(childID)
       return { status, finishedAt, result: answer?.type === "assistant" ? answer.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : "", ...(failure ? { error: failure.message } : {}) }
     }
     return { status: "working" }
@@ -304,7 +305,7 @@ export async function setupWaitTools(ctx: Context) {
           if (!parked) runtime.onInterrupt(sessionID)
           else if (parked.idle !== undefined) track((async () => {
             const session = await request(lifetime.signal, () => ctx.session.get({ sessionID }, { signal: lifetime.signal }))
-            if (parking.get(sessionID) === parked && session.outcome === "interrupted" && session.time.idle !== parked.idle) runtime.onInterrupt(sessionID)
+            if (parking.get(sessionID) === parked && session.outcome === "interrupted" && session.time.idle !== undefined && parked.idle !== undefined && session.time.idle > parked.idle) runtime.onInterrupt(sessionID)
           })())
         }
         if (event.type === "form.created") {

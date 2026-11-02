@@ -560,3 +560,37 @@ for (const first of ["succeeded", "failed"]) for (const later of ["succeeded", "
     if (first === "failed") assert.equal(snapshot.error, "合成执行失败")
   } finally { await f.plugin.close() }
 })
+
+test("旧读取快照晚于新停车时不取消新等待，旧中断查询也须严格推进 idle", async () => {
+  const f = await fixture()
+  let resolveOld
+  try {
+    const context = { ...f.context, sessionID: "child", messageID: "old-wait", signal: f.childController.signal }
+    const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 300)"] }, { ...context, id: "child-process" })
+    const handle = JSON.parse(launched.content).handle
+    f.setChild(undefined, [{ id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+    await f.tools.get("wait_for").execute({ handle: handle.id }, context)
+    await sleep(5)
+    const get = f.ctx.session.get
+    let queries = 0
+    f.ctx.session.get = async (input) => input.sessionID === "child" && ++queries === 1 ? new Promise((resolve) => { resolveOld = resolve }) : get(input)
+    f.plugin.onEvent({ type: "permission.asked", data: { sessionID: "child" } })
+    await until(() => resolveOld)
+    f.plugin.onInput("child")
+    f.hooks.get("context")({ sessionID: "child", system: [] })
+    const controller = new AbortController()
+    f.setChild("interrupted", [{ id: "new-wait", type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }], 3)
+    f.ctx.session.interrupt = async () => { controller.abort(); return { interrupted: true } }
+    await f.tools.get("wait_for").execute({ handle: handle.id }, { ...context, messageID: "new-wait", signal: controller.signal })
+    await sleep(5)
+    resolveOld({ id: "child", outcome: "interrupted", time: { idle: 2 } })
+    await sleep(5)
+    f.ctx.session.get = async (input) => input.sessionID === "child" ? { id: "child", outcome: "interrupted", time: { idle: 2 } } : get(input)
+    f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "child" } })
+    await sleep(5)
+    const child = { sessionID: "child", system: [] }, parent = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(child); f.hooks.get("context")(parent)
+    assert.equal(JSON.parse(child.system[0].text.split("\n", 2)[1]).waits.at(-1).state, "waiting")
+    assert.equal(JSON.parse(parent.system[0].text.split("\n", 2)[1]).tasks[0].status, "working")
+  } finally { resolveOld?.({ id: "child", time: {} }); await f.plugin.close() }
+})

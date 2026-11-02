@@ -36,7 +36,7 @@ def run_case(name):
                     if name=='child-nested-compact-failure':
                         self.send_response(400);self.send_header('Content-Type','application/json');self.end_headers()
                         self.wfile.write(b'{"error":{"message":"synthetic compaction failure","type":"invalid_request_error"}}');return
-                    if name=='process-external-interrupt':compacting.set();compaction_release.wait(15)
+                    if name in ['process-external-interrupt','child-nested-missed-interrupt']:compacting.set();compaction_release.wait(15)
                     text=SUMMARY
                 elif child:
                     child_calls=sum(c['kind']=='primary' and c['child'] for c in calls)
@@ -93,8 +93,8 @@ def run_case(name):
                 'providers':{'synthetic':{'name':'本地合成替身','package':'@opencode/ai/providers/openai-compatible',
                 'settings':{'baseURL':f'http://127.0.0.1:{provider.server_port}/v1','apiKey':'synthetic-only'},
                 'models':{'synthetic':{'limit':{'context':600000,'output':384000}}}}}}
-        if name in ['process-missed-delete','child-missed-delete']:
-            config['plugins'][1]={'package':str(ROOT/'test/disconnected'),'options':{'events':str(root/'events.jsonl')}}
+        if name in ['process-missed-delete','child-missed-delete','child-nested-missed-interrupt']:
+            config['plugins'][1]={'package':str(ROOT/'test/disconnected'),'options':{'events':str(root/'events.jsonl'),'dropSecondInterrupt':name=='child-nested-missed-interrupt'}}
         if name=='child-compact':
             config['compaction']={'auto':True,'keep':{'tokens':0},'buffer':60000}
             config['experimental']={'background_compaction':False}
@@ -144,6 +144,18 @@ def run_case(name):
                     wait(answer_waiting.is_set)
                     time.sleep(.2);assert primary==2,primary
                     answer_release.set()
+            elif name=='child-nested-missed-interrupt':
+                wait(lambda:any(e['type']=='session.execution.interrupted' and e['sessionID']!=sid for e in events()))
+                launched=next(e for e in events() if e['type']=='session.tool.success' and e['sessionID']==sid and e['id']=='call_1')
+                child_id=json.loads(launched['content'][0]['text'])['handle']['executionID']
+                api('POST',f'/api/session/{child_id}/compact',{})
+                wait(compacting.is_set)
+                assert api('POST',f'/api/session/{child_id}/interrupt')['interrupted']
+                wait(lambda:any(e['type']=='yunpiangao.test.dropped-interrupt' and e['sessionID']==child_id for e in events()))
+                wait(resumed.is_set)
+                assert not (workspace/'child-completed').exists()
+                assert not any(e['type']=='session.tool.called' and e.get('name')=='cancel_task' for e in events())
+                compaction_release.set()
             elif name=='child-nested-wait':
                 wait(lambda:any(e['type']=='session.tool.input.started' and e['sessionID']!=sid and e.get('name')=='wait_for' for e in events()))
                 wait(lambda:any(e['type']=='session.execution.interrupted' and e['sessionID']!=sid for e in events()))
@@ -213,9 +225,9 @@ def run_case(name):
                 assert len(notifications)==(0 if name.endswith('input') or name=='process-external-interrupt' else 2 if name in ['process-timeout','child-permission'] else 1),notifications
                 results=[json.loads(m['text'].split('\n',1)[1]) for m in notifications]
                 reasons=[result['reason'] for result in results]
-                expected_reasons=[] if name.endswith('input') or name=='process-external-interrupt' else ['timeout','succeeded'] if name=='process-timeout' else ['input_required','succeeded'] if name=='child-permission' else ['failed'] if name=='process-failure' or failed_child else ['cancelled'] if name.endswith('cancel') or name in ['child-deleted','child-missed-delete'] else ['input_required'] if name in ['child-question','child-websearch'] else ['succeeded']
+                expected_reasons=[] if name.endswith('input') or name=='process-external-interrupt' else ['timeout','succeeded'] if name=='process-timeout' else ['input_required','succeeded'] if name=='child-permission' else ['failed'] if name=='process-failure' or failed_child else ['cancelled'] if name.endswith('cancel') or name in ['child-deleted','child-missed-delete','child-nested-missed-interrupt'] else ['input_required'] if name in ['child-question','child-websearch'] else ['succeeded']
                 assert reasons==expected_reasons,reasons
-                if name.startswith('child-nested') and name.endswith('cancel'):
+                if name.startswith('child-nested') and (name.endswith('cancel') or name=='child-nested-missed-interrupt'):
                     wait(lambda:(workspace/'child-completed').exists())
                     assert sum(c['kind']=='primary' and c['child'] for c in calls)==2,calls
                     launched=next(e for e in events() if e['type']=='session.tool.success' and e['sessionID']==sid and e['id']=='call_1')
@@ -264,4 +276,4 @@ def run_case(name):
 
 
 if __name__=='__main__':
-    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt','process-missed-delete','child-missed-delete','child-nested-compact','child-nested-compact-failure','child-nested-provider-error','child-nested-length','child-nested-compact-cancel']:run_case(case)
+    for case in ['process','process-before','process-failure','process-timeout','process-input','process-cancel','process-compact','process-duplicate','child','child-input','child-cancel','child-permission','child-question','child-nested-wait','child-compact','process-deleted','child-websearch','child-nested-cancel','child-nested-timeout-cancel','child-deleted','process-external-interrupt','process-missed-delete','child-missed-delete','child-nested-compact','child-nested-compact-failure','child-nested-provider-error','child-nested-length','child-nested-compact-cancel','child-nested-missed-interrupt']:run_case(case)
