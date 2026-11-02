@@ -151,9 +151,10 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
     },
     onInput(sessionID: string) { endSessionWait(sessionID, "user_input") },
     onInterrupt(sessionID: string) { endSessionWait(sessionID, "interrupted") },
-    onDelete(sessionID: string) {
+    /** 停止已注册等待与本地投递；指定 waitID 时只收尾该次等待，不取消任务。 */
+    stopWaits(sessionID: string, waitID?: string) {
       for (const wait of waits.values()) {
-        if (wait.record.sessionID !== sessionID) continue
+        if (wait.record.sessionID !== sessionID || (waitID && wait.record.id !== waitID)) continue
         if (wait.timer) clearTimeout(wait.timer)
         settle(wait, "interrupted")
         wait.record.state = "delivered"

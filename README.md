@@ -73,7 +73,7 @@ OpenCode 2.1.4 的显式插件配置要求目录路径；仓库根目录的 `ser
 | `start_process` | `command` 为可执行文件，`args` 为参数数组；在当前工作目录启动，不通过 shell 解释，继承进程环境；使用 `yunpiangao.process` 权限。立即返回具体执行的 handle，保留最多末尾 64 KiB 的合并输出 |
 | `start_subagent` | `agent`、`prompt`、`description`；校验宿主已有的子 Agent 并使用 `subagent` 权限。只允许顶层 session 启动，每次创建独立子会话，继承宿主的模型与权限规则 |
 | `wait_for` | `handle`、可选 `timeout`（秒，默认 600，范围 0 至 2,147,483）；暂停当前 session 推理，在成功、失败、取消、需要介入或超时时接续 |
-| `cancel_task` | `handle`；独立请求取消任务，只返回该 handle 的请求回执。进程发送 SIGTERM，子 Agent 调用宿主中断接口；取消是协作式的 |
+| `cancel_task` | `handle`；独立请求取消任务，只返回该 handle 的请求回执。进程发送 SIGTERM；子 Agent 停止其已注册等待的本地接续并调用宿主中断接口，不级联取消它启动的独立进程。取消是协作式的 |
 
 `wait_for` 必须在独立步骤中单独调用。同一步有其他工具时会拒绝等待，避免中断并行工具。超时或用户新输入仅结束本次等待，任务继续运行；可以用同一 handle 再次等待。需要调整期限时，通过新输入结束等待，再指定新期限。
 

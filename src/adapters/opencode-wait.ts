@@ -7,7 +7,7 @@ import { createWaitRuntime, type TaskSnapshot } from "../wait.js"
 type Context = Plugin.Context
 type SessionID = Parameters<Context["session"]["get"]>[0]["sessionID"]
 type Event = Awaited<ReturnType<Context["event"]["subscribe"]>> extends AsyncIterable<infer T> ? T : never
-type Child = { changed: Set<() => void>; accepted: boolean; launchError?: string; cancelRequested?: boolean; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
+type Child = { changed: Set<() => void>; accepted: boolean; launchError?: string; cancelRequested?: boolean; deletedAt?: number; forms: Map<string, Extract<Event, { type: "form.created" }>["data"]["form"]> }
 const textResult = (value: unknown) => ({ content: JSON.stringify(value), metadata: { yunpiangao: true } })
 const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, additionalProperties: false })
 const string = { type: "string", minLength: 1 }
@@ -57,6 +57,7 @@ export async function setupWaitTools(ctx: Context) {
     for (const notify of child.changed) notify()
   }
   const refreshChild = async (childID: string, child: Child, signal: AbortSignal): Promise<TaskSnapshot> => {
+    if (child.deletedAt !== undefined) return { status: "cancelled", finishedAt: child.deletedAt }
     if (child.launchError) return { status: "failed", error: child.launchError }
     if (!child.accepted) return { status: "working" }
     const sessionID = childID as SessionID
@@ -147,10 +148,17 @@ export async function setupWaitTools(ctx: Context) {
           const child: Child = { changed: new Set(), accepted: false, forms: new Map() }
           children.set(session.id, child)
           const handle = runtime.register(context.sessionID, "subagent", session.id, {
-            read: (signal) => refreshChild(session.id, child, signal),
+            async read(signal) {
+              try { return await refreshChild(session.id, child, signal) }
+              catch (error) {
+                if (child.deletedAt !== undefined) return { status: "cancelled", finishedAt: child.deletedAt }
+                throw error
+              }
+            },
             subscribe(notify) { child.changed.add(notify); return () => { child.changed.delete(notify) } },
             async cancel(signal) {
               child.cancelRequested = true
+              runtime.stopWaits(session.id)
               await request(signal, () => ctx.session.interrupt({ sessionID: session.id }, { signal }))
             },
           })
@@ -202,8 +210,8 @@ export async function setupWaitTools(ctx: Context) {
               parked.idle = session.time.idle
               runtime.activate(record.id)
             } catch (error) {
-              runtime.onInterrupt(context.sessionID)
-              parking.delete(context.sessionID)
+              runtime.stopWaits(context.sessionID, record.id)
+              if (parking.get(context.sessionID) === parked) parking.delete(context.sessionID)
               rejectPause(error)
               throw error
             }
@@ -241,12 +249,26 @@ export async function setupWaitTools(ctx: Context) {
       },
       onEvent(event: Event) {
         if (event.type === "session.deleted") {
-          runtime.onDelete(event.data.sessionID)
+          runtime.stopWaits(event.data.sessionID)
+          const child = children.get(event.data.sessionID)
+          if (child) {
+            child.deletedAt = event.created
+            children.delete(event.data.sessionID)
+            notifyChild(child)
+          }
           parking.delete(event.data.sessionID)
           inputEpochs.delete(event.data.sessionID)
           modelEpochs.delete(event.data.sessionID)
         }
-        if (event.type === "session.execution.interrupted" && !parking.has(event.data.sessionID)) runtime.onInterrupt(event.data.sessionID)
+        if (event.type === "session.execution.interrupted") {
+          const sessionID = event.data.sessionID
+          const parked = parking.get(sessionID)
+          if (!parked) runtime.onInterrupt(sessionID)
+          else if (parked.idle !== undefined) track((async () => {
+            const session = await request(lifetime.signal, () => ctx.session.get({ sessionID }, { signal: lifetime.signal }))
+            if (parking.get(sessionID) === parked && session.outcome === "interrupted" && session.time.idle !== parked.idle) runtime.onInterrupt(sessionID)
+          })())
+        }
         if (event.type === "form.created") {
           const child = children.get(event.data.form.sessionID)
           if (child) { child.forms.set(event.data.form.id, event.data.form); notifyChild(child) }

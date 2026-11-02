@@ -237,7 +237,7 @@ test("卸载等待已发起的取消请求响应信号后完成清理", async ()
   await cancellation
 })
 
-test("删除 owner 结束未激活等待、重试和在途投递，不取消后台任务", async () => {
+test("强停止 owner 等待覆盖未激活、重试和在途投递，不取消后台任务", async () => {
   for (const phase of ["inactive", "retry", "sending-success", "sending-failure"]) {
     let release, attempts = 0
     const f = fixture({ async resume() {
@@ -252,7 +252,7 @@ test("删除 owner 结束未激活等待、重试和在途投递，不取消后�
         f.runtime.activate(wait.id)
         await until(() => attempts === 1)
       }
-      f.runtime.onDelete("parent")
+      f.runtime.stopWaits("parent")
       const errors = f.errors.length
       release?.()
       f.runtime.activate(wait.id)

@@ -9,7 +9,7 @@ const until = async (check) => {
 }
 async function fixture() {
   const tools = new Map(), hooks = new Map(), resumes = [], interrupts = [], controller = new AbortController()
-  let answer = false, fail = false, disposed = 0, childOutcome, childMessages, childIdle = 2
+  let answer = false, fail = false, disposed = 0, childOutcome, parentOutcome, childMessages, childIdle = 2
   const childController = new AbortController()
   let message = { id: "assistant-wait", type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", id: "wait-call", name: "wait_for" }] }
   const context = { sessionID: "parent", agent: "build", messageID: message.id, id: "wait-call", signal: controller.signal }
@@ -21,7 +21,7 @@ async function fixture() {
     session: {
       async hook(name, hook) { hooks.set(name, hook); return { async dispose() { disposed++ } } },
       async get({ sessionID }) {
-        const outcome = sessionID === "child" ? childOutcome ?? (answer ? "succeeded" : undefined) : undefined
+        const outcome = sessionID === "child" ? childOutcome ?? (answer ? "succeeded" : undefined) : parentOutcome
         return { id: sessionID, ...(outcome ? { outcome } : {}), time: { idle: outcome ? childIdle : undefined } }
       },
       async create() { return { id: "child" } },
@@ -34,6 +34,7 @@ async function fixture() {
       async interrupt(input) {
         interrupts.push(input)
         if (input.sessionID === "child") childOutcome = "interrupted"
+        else parentOutcome = "interrupted"
         const target = input.sessionID === "child" ? childController : controller
         target.abort()
         return { interrupted: true }
@@ -199,4 +200,131 @@ test("会话删除事件停止 owner 接续，后台任务仍可完成", async (
     f.hooks.get("context")(event)
     assert.match(event.system[0].text, /succeeded/)
   } finally { await f.plugin.close() }
+})
+
+test("取消内部停车的子任务终止其等待，进程成功或等待到期均不再接续", async () => {
+  for (const timeout of [.02, 1]) {
+    const f = await fixture()
+    try {
+      const context = { ...f.context, sessionID: "child", messageID: "child-wait", signal: f.childController.signal }
+      const launched = await f.tools.get("start_process").execute({ command: process.execPath, args: ["-e", "setTimeout(() => {}, 80)"] }, { ...context, id: "child-process" })
+      const handle = JSON.parse(launched.content).handle
+      f.setChild(undefined, [{ id: "child-prompt", type: "user" }, { id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
+      await f.tools.get("wait_for").execute({ handle: handle.id, timeout }, context)
+      await f.tools.get("cancel_task").execute({ handle: f.handle.id }, f.context)
+      await sleep(160); await f.plugin.reconcile()
+      assert.equal(f.resumes.filter((r) => r.sessionID === "child").length, 0)
+      const event = { sessionID: "child", system: [] }
+      f.hooks.get("context")(event)
+      assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).tasks[0].status, "succeeded")
+    } finally { await f.plugin.close() }
+  }
+})
+
+test("独立删除子会话后父 handle 返回取消，不继续查询已删除会话", async () => {
+  const f = await fixture()
+  try {
+    await f.tools.get("wait_for").execute({ handle: f.handle.id, timeout: .05 }, f.context)
+    f.plugin.onEvent({ type: "session.deleted", created: 3, data: { sessionID: "child" } })
+    const get = f.ctx.session.get
+    f.ctx.session.get = async (input) => {
+      assert.notEqual(input.sessionID, "child", "删除后不应继续查询子会话")
+      return get(input)
+    }
+    await f.plugin.reconcile()
+    await until(() => f.resumes.length === 1)
+    assert.equal(f.resumes[0].metadata.reason, "cancelled")
+  } finally { await f.plugin.close() }
+})
+
+test("停车后新 busy period 的外部中断结束旧等待", async () => {
+  const f = await fixture()
+  try {
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await sleep(5)
+    const get = f.ctx.session.get
+    f.ctx.session.get = async (input) => input.sessionID === "parent" ? { id: "parent", outcome: "interrupted", time: { idle: 3 } } : get(input)
+    f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "parent" } })
+    await sleep(10)
+    f.complete(); await f.plugin.reconcile()
+    assert.equal(f.resumes.length, 0)
+    const event = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(event)
+    assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).waits[0].reason, "interrupted")
+  } finally { await f.plugin.close() }
+})
+
+test("宿主拒绝停车时已 ready 的等待也完成收尾", async () => {
+  const f = await fixture()
+  try {
+    f.complete(); await f.plugin.reconcile()
+    f.ctx.session.interrupt = async () => ({ interrupted: false })
+    await assert.rejects(f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context), /未确认暂停/)
+    const event = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(event)
+    const wait = JSON.parse(event.system[0].text.split("\n", 2)[1]).waits[0]
+    assert.equal(wait.state, "delivered")
+    assert.equal(wait.reason, "succeeded")
+    assert.equal(f.resumes.length, 0)
+  } finally { await f.plugin.close() }
+})
+
+test("旧停车请求晚到的失败只收尾本次等待，保留新等待及其停车归属", async () => {
+  const f = await fixture()
+  let rejectOld
+  try {
+    let attempts = 0
+    const controller = new AbortController()
+    f.ctx.session.interrupt = async () => {
+      if (++attempts === 1) return new Promise((_resolve, reject) => { rejectOld = reject })
+      controller.abort()
+      return { interrupted: true }
+    }
+    f.ctx.session.get = async ({ sessionID }) => ({ id: sessionID, ...(sessionID === "parent" ? { outcome: "interrupted" } : {}), time: { idle: sessionID === "parent" ? 3 : undefined } })
+    const old = f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await until(() => rejectOld)
+    f.plugin.onInput("parent")
+    f.hooks.get("context")({ sessionID: "parent", system: [] })
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, { ...f.context, signal: controller.signal })
+    rejectOld(new Error("合成旧停车失败"))
+    await assert.rejects(old, /旧停车失败/)
+    const event = { sessionID: "parent", system: [] }
+    f.hooks.get("context")(event)
+    assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).waits[1].state, "waiting")
+    f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "parent" } })
+    await sleep(10)
+    const get = f.ctx.session.get
+    f.ctx.session.get = async (input) => input.sessionID === "child" ? { id: "child", outcome: "succeeded", time: { idle: 4 } } : get(input)
+    f.complete(); await f.plugin.reconcile()
+    await until(() => f.resumes.length === 1)
+    assert.equal(f.resumes[0].metadata.reason, "succeeded")
+  } finally { rejectOld?.(new Error("合成清理")); await f.plugin.close() }
+})
+
+test("旧中断事件的查询晚于新等待时不结束新等待", async () => {
+  const f = await fixture()
+  let resolveOld
+  try {
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
+    await sleep(5)
+    const get = f.ctx.session.get
+    let requests = 0
+    f.ctx.session.get = async (input) => {
+      if (input.sessionID !== "parent") return get(input)
+      if (++requests === 1) return new Promise((resolve) => { resolveOld = resolve })
+      return { id: "parent", outcome: "interrupted", time: { idle: 4 } }
+    }
+    f.plugin.onEvent({ type: "session.execution.interrupted", data: { sessionID: "parent" } })
+    await until(() => resolveOld)
+    f.plugin.onInput("parent")
+    f.hooks.get("context")({ sessionID: "parent", system: [] })
+    const controller = new AbortController()
+    f.ctx.session.interrupt = async () => { controller.abort(); return { interrupted: true } }
+    await f.tools.get("wait_for").execute({ handle: f.handle.id }, { ...f.context, signal: controller.signal })
+    resolveOld({ id: "parent", outcome: "interrupted", time: { idle: 3 } })
+    await sleep(10)
+    f.complete(); await f.plugin.reconcile()
+    await until(() => f.resumes.length === 1)
+    assert.equal(f.resumes[0].metadata.reason, "succeeded")
+  } finally { resolveOld?.({ id: "parent", time: {} }); await f.plugin.close() }
 })
