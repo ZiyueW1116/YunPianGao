@@ -34,12 +34,18 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 这是 SDK 集成入口，不能直接作为 `pi -e` 扩展加载。Pi 1.5.0 的普通扩展回调没有结束正常工具轮的返回值；SDK 使用公开的 `agent.finishTurn` 实现原生停放，详见[接口与能力边界](docs/adapters.md#pi-coding-agent-150)。
 
+## Claude Code / Agent SDK
+
+Claude Code 2.1.317 可加载 `claude --plugin-dir "$PWD/dist/claude-mod"`；Agent SDK 0.3.317 使用 `@ziyuew1116/yunpiangao/claude` 的 `createClaudeQuery`，示例为 `node examples/claude.mjs`。两者复用正式 Mods，支持原生后台任务等待、权限介入、空闲摘要与原生压缩提交。
+
+原生 Bash 完整终态查询仍有接口缺口，因此这条入口不宣称覆盖全部目标语义。版本、输入流生命周期、关闭顺序、真实验证和支持边界见 [Claude 使用说明](docs/claude.md) 与[代码流和数据流](docs/claude.html)。它不是普通 settings hooks 或仅 MCP 的接入。
+
 ## 两层边界
 
 | 层 | 责任 | 源码 |
 |---|---|---|
 | 核心 | 空闲调度、摘要失效和指纹复核；任务与单次等待、期限、结算竞争、接续重试及结构化依赖 | [scheduler.ts](src/scheduler.ts)、[wait.ts](src/wait.ts) |
-| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [Pi](src/adapters/pi.ts)、[OpenCode](src/adapters/opencode.ts)、[进程实现](src/adapters/process.ts) |
+| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [Pi](src/adapters/pi.ts)、[OpenCode](src/adapters/opencode.ts)、[Claude SDK](src/adapters/claude.ts)、[Claude Mods](src/adapters/claude-mod/hooks/register.mjs)、[进程实现](src/adapters/process.ts) |
 
 适配层依赖核心层。核心不导入 Harness SDK、不按 Harness 名称分支、不读写聊天库。`CompactionPort`、`TaskSource` 和 `WaitPort` 对应真实调用边界；没有通用 Harness 基类、注册平台或能力矩阵。接口与生命周期见[适配契约](docs/adapters.md)。
 
@@ -85,11 +91,12 @@ npm ci
 npm run check
 npm test
 npm run test:pi
+npm run test:claude
 npm run audit:public
 npm pack --dry-run
 ```
 
-`npm test` 包含核心回归、OpenCode 适配单测和 Pi 真实 SDK 场景；`test:pi` 可单独运行 Pi 场景。Pi 测试使用临时项目、独立配置、会话及模型缓存路径，不连接外部模型或现有 DSW。隔离方式、实测范围和模型替身限制见[验证文档](docs/validation.md)。
+`npm test` 包含核心回归、OpenCode 适配单测、Pi 真实 SDK 与 Claude SDK/Mods 场景；`test:pi` 可单独运行 Pi 场景。Pi 测试使用临时项目、独立配置、会话及模型缓存路径，不连接外部模型或现有 DSW。隔离方式、实测范围和模型替身限制见[验证文档](docs/validation.md)。
 
 ## 许可证
 

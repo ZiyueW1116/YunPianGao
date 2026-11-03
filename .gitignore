@@ -16,3 +16,4 @@ __pycache__/
 *.sqlite*
 auth.json
 service.json
+.claude-lab/

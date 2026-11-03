@@ -2,7 +2,7 @@
 
 ## 两层依赖
 
-核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
+核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode、Claude 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
 
 核心保留已有调度器和等待状态机；不变的是语义与依赖方向，代码可随已验证契约修改。没有通用 Harness 基类、动态注册平台、多层工厂或独立持久化任务框架。
 
@@ -132,3 +132,9 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
 
 等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
+
+## Claude Code 2.1.317 / Agent SDK 0.3.317
+
+`createClaudeQuery` 加载正式 Mods；终端使用构建后的 `dist/claude-mod`。`scheduler.ts`、`wait.ts` 不导入 Claude SDK。构建将相同核心编译结果放进插件目录，用正式 `clock.after` 和 crypto 映射环境依赖。
+
+原生 Bash / agent.spawn 提供执行对象，Mods 轮边界停放，普通 prompt.submit 接续；session.compact 返回消息列表并由宿主持久化。SDK close 先 interrupt 再关闭原生进程。创建与取消、权限介入、输入时序、摘要资格、热重载和原生通知缺口的完整契约见 [Claude 使用说明](claude.md)。

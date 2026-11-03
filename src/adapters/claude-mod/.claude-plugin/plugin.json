@@ -1,0 +1,22 @@
+{
+  "name": "yunpiangao",
+  "version": "0.1.0",
+  "description": "云片糕：原生任务等待与空闲摘要",
+  "author": {
+    "name": "YunPianGao"
+  },
+  "userConfig": {
+    "thresholdTokens": {
+      "type": "number",
+      "title": "摘要阈值（tokens）",
+      "default": 100000,
+      "description": "最近完整回答用量达到阈值后准备摘要。"
+    },
+    "idleDelayMs": {
+      "type": "number",
+      "title": "空闲延迟（毫秒）",
+      "default": 1500,
+      "description": "完整回答后等待此时长再准备摘要。"
+    }
+  }
+}

@@ -1,5 +1,40 @@
 # 验证范围
 
+## Claude Code / Agent SDK
+
+固定 `@anthropic-ai/claude-agent-sdk@0.3.317` 及其 Claude Code 2.1.317 原生包。2026-11-03 在 macOS arm64、Node.js 26.3.1 验证。入口、版本依据、闭源边界和操作契约见 [Claude 使用说明](claude.md)。
+
+`test/claude-runtime.test.mjs` 穿过产品 `createClaudeQuery`、正式 Mods、原生 Bash/子 Agent/权限、流式轮边界、输入、原生压缩与会话 fork。36 项目标验证包含 33 项产品与生命周期场景、3 项独立 SDK defer 对照：
+
+- 完成、注册前完成、失败、超时后同 handle 重等、新输入及重等、独立取消、同批多个工具、显式结束等待。
+- 进程和子 Agent 等待中原生压缩；摘要仍阻塞时任务完成，压缩后才有一次接续；压缩后的请求保留结构化依赖。
+- 子 Agent 完成、输入后重等、取消；原生权限 ask 使父会话以 input_required 接续，批准后再等待同一执行。
+- 回答后的空闲摘要生成与原生替换；新输入、依赖变化使旧摘要失效；没有改聊天文件或把摘要伪装成用户提交。
+- 两次通知、runtime 的零时延通知被测试扩展丢弃后的周期复核、接纳后回执被改写为丢失时的同 ID 去重。通知遗漏实验仍让 Mods 收到原生任务通知并更新缓存，不证明宿主完全遗漏 Bash 终态通知时能够恢复。
+- 原生扩展拒绝子创建、SDK 进程创建失败；interrupt + close 与真实 agent.spawn 前后阶段竞争，没有迟到 handle 或额外父请求；关闭后输入拒绝、同步重入只调用一次 interrupt；准备中的摘要在关闭时被中止，不提交。
+- 停放期间 close、/clear、实际代码热重载；旧等待不再接续，独立进程继续完成。原生 SDK fork 的新实例拒绝历史里的旧 handle。没有源码变化的 reloadPlugins 不强行解释为新实例。
+- 一个独立 PTY 场景启动正式交互终端，完成 onboarding、合成项目的原生信任检查，经过模型、工具、等待与接续后退出；不是只在 SDK 中加载插件。
+
+生命周期故障只控制正式扩展边界或 SDK 创建/interrupt 调用边界，不替换原生执行循环。SDK 创建失败实验在分配进程前抛错，不声称覆盖闭源宿主任意内部分配异常。创建竞争以被测创建返回之前关闭为标准；已经发出的子请求可以存在，关闭后不能再发布 handle 或产生父接续。
+
+测试每例使用临时项目、`CLAUDE_CONFIG_DIR`、`CLAUDE_CODE_TMPDIR`、空 settingSources 和回环地址的 Anthropic Messages/SSE 替身。defer 的 SDK 历史读取也显式使用同一临时配置根；测试只读正式 SDK 投影，不修改会话文件。SDK 退出等待消费循环，PTY 退出等待原生进程结束，再删除临时目录。未读取现有用户认证、聊天库或 DSW；未用 bypassPermissions。权限测试使用原生 ask 规则与受控 permission host，其余合成工具使用显式允许规则。
+
+普通任务有 3 次父模型请求；超时后重等 4 次；输入后重等或取消 5 次；普通子任务另有 1 次子请求，权限介入场景共 2 次子请求。对预设模型流程断言额外唤醒与长 sleep 均为 0，等待提示为 Mods 生成的零用量消息。长 sleep 指模型实际工具输入里至少 60 秒的 sleep；测试门闩不算模型休眠。最终 148 项全量运行中，按原生 task_updated.end_time 到接续 provider 请求计时，目标场景观测为 11–108 毫秒，不是性能保证。替身主请求通常报告 100 input / 10 output tokens，摘要阈值场景另用合成用量；均不代表真实计费。
+
+`test/claude-defer.test.mjs` 只核实被产品排除的正式替代路径。初始 defer 断言工具未执行。恢复实验分别断言“重新 PreToolUse 复核”与“跳过复核执行原工具”的已观测序列，并记录执行次数及请求数；通过不代表该路径满足产品语义。流式双工具只留下一个 deferred payload；不承诺批量恢复。完整结果与文档差异见 [Claude 边界](claude.md)。
+
+模型回复、工具选择及摘要内容由替身预设。这些结果证明真实宿主的代码路径与生命周期，不证明真实模型自主等待、摘要质量、吞吐改善或生产延迟。其他平台交由对应环境另行验收。完整检查、打包和公开边界审计见下列命令：
+
+`npm run check`、`npm test`（148 项）、`npm run test:claude`（36 项）、固定版本插件校验、npm 归档与公开边界审计均通过。HTML 说明已在浏览器检查首屏与代码流排版。
+
+```sh
+npm run check
+npm test
+npm run test:claude
+npm run audit:public
+npm pack
+```
+
 ## Pi Coding Agent 1.5.0
 
 主要验收使用 npm 锁定的 `@earendil-works/pi-coding-agent@1.5.0`，对应官方 tag `v1.5.0`。官方 [SDK](https://pi.dev/docs/latest/sdk)、[扩展](https://pi.dev/docs/latest/extensions) 和[模型](https://pi.dev/docs/latest/models) 文档用于定位能力；具体签名与执行顺序以安装包声明和[固定版本源码](adapters.md#pi-coding-agent-150)为准。对象为正式 Coding Agent SDK，没有使用 Pi Durable。
@@ -97,5 +132,6 @@ OpenCode 适配器使用自定义摘要提示词，移除工具定义，并通�
 ## 兼容范围
 
 - Pi SDK 适配器针对 1.5.0；OpenCode 兼容适配器针对 2.1.4。两者使用各自原生摘要与提交接口。
+- Claude SDK 针对 0.3.317，Mods 针对 CLI 2.1.317；支持边界见 [Claude 说明](claude.md)。
 - 核心构建输出为 ESM，CI 在 Node.js 22 和 24 上运行检查与测试。
 - 其他 Harness 通过 `CompactionPort` 接入；原生不透明替换窗口需要对应的端口实现，见 [适配契约](adapters.md)。
