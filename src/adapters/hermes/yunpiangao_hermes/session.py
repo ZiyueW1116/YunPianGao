@@ -80,7 +80,10 @@ class HermesSession:
     async def create(cls, agent_options=None, *, scheduling=None, poll_interval_ms=500, node="node", core_path=None):
         self = cls()
         options = dict(agent_options or {})
-        options.setdefault("session_id", "ypg-hermes-" + uuid.uuid4().hex)
+        if options.get("session_id") in (None, ""):
+            options["session_id"] = "ypg-hermes-" + uuid.uuid4().hex
+        if not isinstance(options["session_id"], str):
+            raise TypeError("session_id 必须是字符串或 None。")
         options.setdefault("skip_memory", True)
         options.setdefault("skip_background_review", True)
         if not options["skip_memory"] or not options["skip_background_review"]:

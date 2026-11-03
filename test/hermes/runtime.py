@@ -334,8 +334,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         other = None
         try:
             options = {key: value for key, value in f.options.items() if key != "session_db"}
-            other = await create_hermes_session(options, scheduling={"thresholdTokens": 999999})
+            other = await create_hermes_session({**options, "session_id": None}, scheduling={"thresholdTokens": 999999})
             await other.prompt("合成默认持久化检查。")
+            await asyncio.to_thread(other.tool, "start_process", {"command": "printf IDENTITY"})
+            state = await other.snapshot()
+            self.assertEqual(state["tasks"][0]["handle"]["sessionID"], other.agent.session_id)
             self.assertIsNotNone(other._owned_db)
             self.assertTrue(other._owned_db.get_messages(other.session_id))
             await other.close()
