@@ -6,7 +6,7 @@
 
 `test/pi-runtime.test.mjs` 通过产品 `createPiSession` 入口加载 inline extension，调用原生 `bindExtensions`、`prompt`、工具执行、`finishTurn`、custom message、SessionManager 和 compact。模型服务是仅监听本机回环地址的 OpenAI-compatible SSE 替身，未替换 SDK 的工具或执行循环。`npm test` 包含这些场景；`npm run test:pi` 可单独运行。
 
-20 个场景覆盖：
+20 个完整执行循环场景覆盖：
 
 - 后台进程完成、提前完成、非零退出、超时后同一 handle 重等、等待中用户输入及重等、独立取消、显式 interrupt、接纳回执丢失后的去重，以及模型请求期间新输入使旧等待意图失效。
 - 进程与子 Agent 等待期间原生 compact；任务在摘要请求仍阻塞时完成，只在 compact 结束后接续，压缩后的请求仍收到结构化依赖。
@@ -14,13 +14,22 @@
 - 同一工具批次含等待和另一个进程启动时，两者都正常返回，在原生轮边界停放；没有 OpenCode 的单工具中断限制。
 - 回答后的空闲期准备并提交摘要；准备期间新输入使结果失效；准备完成后、提交边界前系统提示变化时拒绝旧摘要，不额外调用原生摘要模型作为 fallback。
 
+另有 20 个生命周期场景，使用产品入口与原生 SDK 对象；在资源加载、创建回执、绑定或订阅边界注入故障与门闩，检查真实对象的释放、任务注册及模型请求数量：
+
+- 父入口的资源加载、SDK 创建、订阅安装失败；子入口的资源加载、SDK 创建、绑定失败。已有 session 必须释放，失败不发布 handle；恢复边界后独立创建成功。
+- close 与子资源加载、绑定入口、绑定完成交错；SDK 创建回执晚于 close；通过工具对象独立发起的创建也被 close 等待。关闭后不启动子模型、不发布 handle，并发 close 都等到清理完成。
+- 资源加载或绑定期间的工具取消信号；运行中子推理的关闭、结果收尾与一次释放；关闭期间独立进程继续完成；就绪投递被阻塞在 compact 时关闭，不产生接续。
+- 通过原生 `AgentSessionRuntime.dispose()`、文件会话 fork、内存会话 fork，以及 `session.reload()` 触发 shutdown。旧工具与 interrupt 拒绝操作，无迟到接续；新 fork 实例没有旧任务，旧快照保留原归属。reload 不重新注册旧工具，也不恢复已释放的 session。
+
+这些门闩只控制边界时序，没有增加产品故障注入接口或替换 SDK 执行循环。部分创建失败和独立工具调用场景不经过模型轮次；它们验证资源与生命周期契约，不作为模型自主行为证据。
+
 通用 `wait.test.mjs` 另覆盖注册前完成、重复通知、完成与期限竞争、查询失败与断线补偿、需要介入及解除、一次有效接续、handle 归属、取消与卸载。`scheduler.test.mjs` 覆盖阈值、输入竞争、失效、重复触发、指纹及生命周期。Pi 进程内事件不经过远端 SSE，未照搬 OpenCode 的重连或 idle 推断补丁。
 
-隔离方式按 1.5.0 的 SDK 与 config 源码核实：每例使用临时 cwd、显式 `agentDir`、`SessionManager.create(cwd, sessionDir)`；ModelRuntime 显式指定临时 `authPath`、`modelsPath` 与 `modelsStorePath`，禁用初始模型刷新。测试进程还设置 `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 与 `PI_OFFLINE`，隔离主题、辅助二进制和默认会话路径；不假设遵循 XDG。无扩展包配置、无现有用户配置、无外部服务请求，任务状态在内存中。清理前等待独立进程实际退出，再删除临时目录。上海 DSW 服务、配置和会话库不参与测试。
+隔离方式按 1.5.0 的 SDK 与 config 源码核实：每例使用临时 cwd、显式 `agentDir` 和 SessionManager；文件会话使用 `SessionManager.create(cwd, sessionDir)`，内存 fork 与部分恢复检查使用 `SessionManager.inMemory(cwd)`。ModelRuntime 显式指定临时 `authPath`、`modelsPath` 与 `modelsStorePath`，禁用初始模型刷新。测试进程还设置 `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 与 `PI_OFFLINE`，隔离主题、辅助二进制和默认会话路径；不假设遵循 XDG。无扩展包配置、无现有用户配置、无外部服务请求，任务状态在内存中。清理前等待独立进程实际退出，再删除临时目录。上海 DSW 服务、配置和会话库不参与测试。
 
-2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；本次单独 Pi 运行观测为 1–12 毫秒，不是性能保证。
+2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。完整执行循环场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；单独 Pi 运行观测为 2–9 毫秒，不是性能保证。
 
-验收命令 `npm run check`、`npm test`（91 项）、`npm run test:pi`（20 项）、`npm run audit:public` 与 npm 归档内容检查均通过。OpenCode 兼容入口另外通过 6 个压缩和 32 个等待真实场景；这些结果不代替 Pi 验收。
+验收命令 `npm run check`、`npm test`（111 项）、`npm run test:pi`（40 项）、`npm run audit:public` 与 npm 归档内容检查均通过。OpenCode 兼容入口的 6 个压缩和 32 个等待真实场景沿用此前验收记录，生命周期修订未重跑；这些结果不代替 Pi 验收。
 
 模型回复、工具选择及用量均由替身预设。上述结果证明 Pi 真实 SDK 的执行与接续路径，不证明真实模型自主选择 `wait_for`、摘要质量、性能改善或生产延迟。真实模型对照评估、Windows 和扩展 UI 请求转发仍未验证。
 
