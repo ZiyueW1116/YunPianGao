@@ -35,21 +35,28 @@ index 6586547..63e5069 100644
 +        if type(request.independent) is not bool:
 +            raise SubagentLifecycleError("independent 必须是布尔值。")
 diff --git a/agent/turn_tool_round.py b/agent/turn_tool_round.py
-index 0afc7ab..94f3187 100644
+index 0afc7ab..622a00a 100644
 --- a/agent/turn_tool_round.py
 +++ b/agent/turn_tool_round.py
 @@ -21,0 +22,2 @@ logger = logging.getLogger("agent.conversation_loop")
 +RUNTIME_BOUNDARY_CONTRACT = 1
 +
-@@ -199,0 +202,11 @@ def run_tool_round(
-+    # 成功工具批次后的正常停放边界；调用方负责在 run_conversation 返回后接续。
+@@ -48,0 +51,11 @@ class ToolRoundVerdict:
++
++def runtime_parked_response(agent: Any, messages: list) -> Optional[str]:
 +    boundary = getattr(agent, "tool_round_boundary", None)
-+    if boundary is not None:
-+        parked_response = boundary(messages)
-+        if parked_response is not None:
-+            if not isinstance(parked_response, str) or not parked_response:
-+                raise TypeError("停放回调必须返回非空状态文本或 None。")
-+            final_response = parked_response
-+            _turn_exit_reason = "runtime_parked"
-+            return _verdict("break")
++    if boundary is None:
++        return None
++    response = boundary(messages)
++    if response is not None and (not isinstance(response, str) or not response):
++        raise TypeError("停放回调必须返回非空状态文本或 None。")
++    return response
++
++
+@@ -199,0 +213,6 @@ def run_tool_round(
++    # 成功工具批次后的正常停放边界；调用方负责在 run_conversation 返回后接续。
++    if (parked_response := runtime_parked_response(agent, messages)) is not None:
++        final_response = parked_response
++        _turn_exit_reason = "runtime_parked"
++        return _verdict("break")
 +
