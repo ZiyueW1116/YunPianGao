@@ -31,7 +31,10 @@
     "server.js",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "python/pyproject.toml",
+    "python/requirements.lock",
+    "python/yunpiangao_openhands/*.py"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -40,7 +43,8 @@
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build",
-    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs"
+    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
+    "test:openhands": "npm run build && node scripts/test_openhands.mjs"
   },
   "engines": {
     "node": ">=22"

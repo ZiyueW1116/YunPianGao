@@ -10,3 +10,5 @@
 首版 handle、期限、恢复原因与结果只在进程内保存。跨重启恢复、持久化任务框架、已有原生任务接管、复用既有子 session 和嵌套云片糕任务均不在当前支持范围；会话记录持久化不等于执行句柄可恢复。
 
 OpenCode 2.1.4 的公开接口缺口与兼容边界继续记录在[OpenCode 契约](adapters.md#opencode-214)，不作为 Pi 适配的替代证明。
+
+OpenHands 1.59.0 的本地 SDK 入口与边界见 [OpenHands 说明](openhands.md)。真实模型自主工具选择、跨平台进程树取消、远端 Agent Server、ACP、MCP 接管和跨重启执行恢复均未验证；同步 `run()` 的输入排队与步骤边界暂停不代表流式 steering 或即时取消。

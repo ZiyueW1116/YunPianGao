@@ -34,6 +34,10 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 这是 SDK 集成入口，不能直接作为 `pi -e` 扩展加载。Pi 1.5.0 的普通扩展回调没有结束正常工具轮的返回值；SDK 使用公开的 `agent.finishTurn` 实现原生停放，详见[接口与能力边界](docs/adapters.md#pi-coding-agent-150)。
 
+## OpenHands Software Agent SDK
+
+OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实例通过专用 Node 子进程复用相同的压缩调度器、等待 runtime 和进程执行源；Python 拥有真实 Conversation、工具与原生 Condensation。需要 Node.js 22 和 Python 3.12 及以上，安装、可运行入口与支持边界见 [OpenHands 使用说明](docs/openhands.md)，代码流与数据流见[自包含 HTML](docs/openhands.html)。
+
 ## 两层边界
 
 | 层 | 责任 | 源码 |

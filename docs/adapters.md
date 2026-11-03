@@ -132,3 +132,7 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
 
 等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
+
+## OpenHands Software Agent SDK 1.59.0
+
+`OpenHandsSession` 是本地 Python SDK 产品入口。固定版本、工具协议、原生暂停收尾、Condenser 提交边界、跨语言管道、接续去重及生命周期契约见 [OpenHands 说明](openhands.md)。核心仍为 `scheduler.ts` 和 `wait.ts`；宿主专用桥接为 `src/adapters/openhands-core.ts`，Python 包为 `python/yunpiangao_openhands/`。没有复制核心规则或修改 OpenHands 源码。

@@ -16,3 +16,9 @@ __pycache__/
 *.sqlite*
 auth.json
 service.json
+
+*.egg-info/
+.venv/
+
+.pytest_cache/
+python/build/
