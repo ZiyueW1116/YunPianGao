@@ -132,3 +132,9 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
 
 等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
+
+## Hermes Agent v0.22.6
+
+固定源码 `f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab` 加最小宿主补丁，入口为 Python `create_hermes_session()` 与 `python -m yunpiangao_hermes`。Python 适配持有原生工具、执行与压缩对象，通过本地双向管道运行共用的 TypeScript scheduler / wait runtime；核心没有宿主依赖或源码副本。
+
+首版选择嵌入式 `AIAgent.run_conversation()` 队列，复用原生 terminal、SubagentLifecycleService、ContextCompressor 与压缩事务。普通成功工具轮停放和独立子归属需要固定补丁；ContextEngine 的 `select_context` 不算持久压缩，`on_turn_complete` 不承担可靠收尾，`on_session_end` 也可能来自压缩。使用、提交复核、生命周期与明确能力缺口见 [Hermes 契约](hermes.md) 和[自包含说明](hermes.html)。

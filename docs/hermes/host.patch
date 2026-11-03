@@ -1,0 +1,55 @@
+diff --git a/agent/subagent_lifecycle.py b/agent/subagent_lifecycle.py
+index 6586547..63e5069 100644
+--- a/agent/subagent_lifecycle.py
++++ b/agent/subagent_lifecycle.py
+@@ -61,0 +62 @@ class SubagentLaunchRequest:
++    independent: bool = False
+@@ -277 +278 @@ class SubagentLifecycleService:
+-    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any]) -> SubagentHandle:
++    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any], *, cancel_check: Optional[Callable[[], bool]] = None) -> SubagentHandle:
+@@ -309,2 +310,5 @@ class SubagentLifecycleService:
+-        if not subagent_id:
+-            raise SubagentLifecycleError("Hermes failed to assign a child identity.")
++        if not subagent_id or (cancel_check is not None and cancel_check()):
++            from tools.delegate_tool import _close_child, _detach_child
++            _detach_child(parent, child)
++            _close_child(child, "子执行在发布前结束")
++            raise SubagentLifecycleError("父会话已关闭，子执行未发布。" if subagent_id else "Hermes 未分配子执行身份。")
+@@ -322 +326,14 @@ class SubagentLifecycleService:
+-        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
++        from tools.delegate_tool import _close_child, _detach_child
++        try:
++            # 独立执行不随父轮的输入或中断结束；生命周期 owner 必须显式 cancel。
++            if request.independent:
++                _detach_child(parent, child)
++            record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
++        except BaseException:
++            with _REGISTRY.lock:
++                _REGISTRY.records.pop(subagent_id, None)
++                if request.correlation_id:
++                    _REGISTRY.correlations.pop(correlation_key, None)
++            _detach_child(parent, child)
++            _close_child(child, "子执行发布失败")
++            raise
+@@ -453,0 +471,2 @@ class SubagentLifecycleService:
++        if type(request.independent) is not bool:
++            raise SubagentLifecycleError("independent 必须是布尔值。")
+diff --git a/agent/turn_tool_round.py b/agent/turn_tool_round.py
+index 0afc7ab..94f3187 100644
+--- a/agent/turn_tool_round.py
++++ b/agent/turn_tool_round.py
+@@ -21,0 +22,2 @@ logger = logging.getLogger("agent.conversation_loop")
++RUNTIME_BOUNDARY_CONTRACT = 1
++
+@@ -199,0 +202,11 @@ def run_tool_round(
++    # 成功工具批次后的正常停放边界；调用方负责在 run_conversation 返回后接续。
++    boundary = getattr(agent, "tool_round_boundary", None)
++    if boundary is not None:
++        parked_response = boundary(messages)
++        if parked_response is not None:
++            if not isinstance(parked_response, str) or not parked_response:
++                raise TypeError("停放回调必须返回非空状态文本或 None。")
++            final_response = parked_response
++            _turn_exit_reason = "runtime_parked"
++            return _verdict("break")
++

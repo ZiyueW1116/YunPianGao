@@ -27,20 +27,23 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.py",
     "server.js",
     "README.md",
     "LICENSE",
     "docs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy_hermes.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build",
-    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs"
+    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
+    "test:hermes": "npm run build && python3 scripts/test_hermes.py"
   },
   "engines": {
     "node": ">=22"
