@@ -1,5 +1,39 @@
 # 验证范围
 
+## Codex app-server 0.166.0
+
+目标为官方 `rust-v0.166.0` release 的 macOS arm64 二进制，实际输出 `codex-cli 0.166.0`；源码对应 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`。归档与原生二进制 SHA-256 见 [Codex 版本记录](codex.md)。全局 0.147.0 未用于验收。没有宿主源码改动或自行构建的宿主补丁。
+
+`test/codex-runtime.test.mjs` 的 37 项场景使用产品 `createCodexSession` 入口和真实 `codex app-server`，其中一项直接运行 `dist/codex-cli.js` 终端入口完成任务接续。本机 Responses SSE 服务只预设模型回复、工具选择和用量，不替换原生执行循环、工具处理器、命令执行、会话记录或压缩实现。handle 从真实工具结果或压缩后重新注入的结构化状态读取。
+
+37 项覆盖：
+
+- 进程完成、注册等待前完成、非零退出、启动失败、64 KiB 输出尾部、超时后同 handle 重等、等待中新输入与重等、独立取消、显式 interrupt、同批其他工具完成，以及零期限与完成竞争时的一次接续。
+- 独立子 thread 完成、失败、输入后重等、独立取消；原生命令审批使父 handle 返回 `input_required`，明确拒绝后同 handle 可重等并得到子任务最终回答。测试不批准或执行该次提权命令。
+- 原生 read-only 权限下写入失败且目标文件不存在；进程只走 `command/exec`，不调用沙箱外的 shellCommand 或 process/spawn。
+- 正常回包重复发送仍只有一次模型接续；屏蔽 `item/completed` 确认通知后，经原生 `thread/read` 补偿确认接纳。遗漏子任务的回答与完成事件时，按绑定的具体 turn 查询终态并恢复回答文本。通知屏蔽和回包复制只位于测试的连接边界，未替换宿主循环。
+- 父入口 initialize 或 thread/start 回执处理失败后，实际 app-server 进程退出；子 thread 创建失败不发布 handle；close 等待在途子 thread 创建。故障与门闩位于真实原生响应边界，没有产品故障注入配置。
+- reload、fork、switchThread 后旧实例失效、新实例没有旧 handle；close 与在途 fork 或 reload 竞争时不发布替换实例；并发 close 和连接关闭通知中的同步重入获得相同 Promise。
+- 空闲原生 compact、close 收尾在途 compact，以及先结束等待再 compact 后重新等待同 handle；压缩后模型输入仍带任务依赖、deadline 和恢复原因，任务原始输出不进入系统或开发者指令。
+
+压缩相关的负对照单独确认能力缺口：产品在活跃 turn 上拒绝 compact，保留等待和任务；测试直接调用同一真实连接的 `thread/compact/start` 时，原等待 turn 变为 interrupted、动态工具失败、独立进程仍在运行，进程完成后不额外唤醒。这个实验不算“等待期间压缩已支持”。空闲预生成摘要和安全提交没有可运行实现，未用 Pi/OpenCode 结果补充证明。
+
+每例建立临时 cwd 和显式独立 CODEX_HOME，配置文件、认证存储模式、会话、数据库、日志和缓存遵循该版本原生目录规则，不假设 XDG。清除测试子进程继承的 `CODEX_*` 会话变量后再设置独立 CODEX_HOME，移除外部 API key，使用 `requires_openai_auth = false` 的本机 provider。临时配置禁用 analytics、OTel、shell snapshot、自动压缩及模型中的技能目录；不改动用户配置、认证或真实会话。Codex 仍会发现主目录技能元数据，测试断言模型请求不含可用技能清单。清理等待原生进程退出后删除临时目录；现有 DSW 服务不参与测试。
+
+运行命令：
+
+```sh
+npm run check
+CODEX_BIN=/absolute/path/to/codex npm run test:codex
+CODEX_BIN=/absolute/path/to/codex npm test
+npm run audit:public
+npm pack --dry-run
+```
+
+`test:codex` 未设置二进制时直接失败；普通 `npm test` 未设置时明确跳过 Codex 场景。2026-11-03 在 macOS arm64、Node.js 26.3.1 上，目标宿主 37 项及设置二进制后的完整 149 项测试均通过；普通完成流程 3 次父模型请求，超时重等 4 次，用户输入后重等或取消 5 次，显式 interrupt 停在 2 次。普通子任务另有一次子模型请求；权限介入的子任务需要原生命令结果后的第二次子模型请求。
+
+预设流程的额外父模型唤醒和时长至少 60 秒的 sleep 工具调用均为 0。完整等待场景的单独运行中，从原生命令最终回执、子 turn/completed 或具体 turn 终态查询回执的本地接收时刻（TaskSnapshot.finishedAt）到接续 provider 请求观测为 6–25 毫秒；注册前完成包含其预先完成至开始等待的时间。该值不是操作系统精确退出时刻或生产延迟保证。模型与工具选择由替身预设，不证明真实模型自主选择、摘要质量或性能改善。Linux、Windows、跨重启恢复及宿主补丁均未验收。
+
 ## Pi Coding Agent 1.5.0
 
 主要验收使用 npm 锁定的 `@earendil-works/pi-coding-agent@1.5.0`，对应官方 tag `v1.5.0`。官方 [SDK](https://pi.dev/docs/latest/sdk)、[扩展](https://pi.dev/docs/latest/extensions) 和[模型](https://pi.dev/docs/latest/models) 文档用于定位能力；具体签名与执行顺序以安装包声明和[固定版本源码](adapters.md#pi-coding-agent-150)为准。对象为正式 Coding Agent SDK，没有使用 Pi Durable。
@@ -30,7 +64,7 @@
 
 2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。完整执行循环场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；本次单独 Pi 运行观测为 1–10 毫秒，不是性能保证。
 
-验收命令 `npm run check`、`npm test`（112 项）、`npm run test:pi`（41 项）、`npm run audit:public` 与 npm 归档内容检查均通过。OpenCode 兼容入口的 6 个压缩和 32 个等待真实场景沿用此前验收记录，生命周期修订未重跑；这些结果不代替 Pi 验收。
+验收命令 `npm run check`、`npm test` 中的 112 项共享、Pi 与 OpenCode 测试、`npm run test:pi`（41 项）、`npm run audit:public` 与 npm 归档内容检查均通过。Codex 的额外场景和二进制要求见上节。OpenCode 兼容入口的 6 个压缩和 32 个等待真实场景沿用此前验收记录，生命周期修订未重跑；这些结果不代替 Pi 验收。
 
 模型回复、工具选择及用量均由替身预设。上述结果证明 Pi 真实 SDK 的执行与接续路径，不证明真实模型自主选择 `wait_for`、摘要质量、性能改善或生产延迟。真实模型对照评估、Windows 和扩展 UI 请求转发仍未验证。
 

@@ -24,6 +24,10 @@
     "./pi": {
       "types": "./dist/adapters/pi.d.ts",
       "import": "./dist/adapters/pi.js"
+    },
+    "./codex": {
+      "types": "./dist/adapters/codex.d.ts",
+      "import": "./dist/adapters/codex.js"
     }
   },
   "files": [
@@ -40,7 +44,9 @@
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build",
-    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs"
+    "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
+    "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "install:codex": "node scripts/install-codex.mjs"
   },
   "engines": {
     "node": ">=22"

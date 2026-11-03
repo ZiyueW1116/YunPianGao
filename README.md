@@ -4,6 +4,8 @@
 
 主要适配目标为 **Pi Coding Agent 1.5.0 正式 SDK**（`@earendil-works/pi-coding-agent`），入口为 `@ziyuew1116/yunpiangao/pi`。OpenCode 2.1.4 保留独立[兼容入口](docs/opencode.md)。项目不使用 Pi Durable，不提供跨重启任务恢复。
 
+Codex CLI 0.166.0 提供独立的[实验性等待入口](docs/codex.md) `@ziyuew1116/yunpiangao/codex`，使用真实 app-server 动态工具和原生执行对象。该入口保持等待工具待回包；不支持空闲预生成摘要提交或等待期间压缩，不属于完整云片糕语义移植。代码流与数据流见[Codex 自包含说明](docs/codex.html)。
+
 ## 在 Pi SDK 中使用
 
 当前从源码构建，尚未发布 npm 包。需要 Node.js 22 或更新版本。
