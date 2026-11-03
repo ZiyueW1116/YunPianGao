@@ -23,7 +23,7 @@
 
 `test/claude-defer.test.mjs` 只核实被产品排除的正式替代路径。初始 defer 断言工具未执行。恢复实验分别断言“重新 PreToolUse 复核”与“跳过复核执行原工具”的已观测序列，并记录执行次数及请求数；通过不代表该路径满足产品语义。流式双工具只留下一个 deferred payload；不承诺批量恢复。完整结果与文档差异见 [Claude 边界](claude.md)。
 
-模型回复、工具选择及摘要内容由替身预设。这些结果证明真实宿主的代码路径与生命周期，不证明真实模型自主等待、摘要质量、吞吐改善或生产延迟。其他平台交由对应环境另行验收。完整检查、打包和公开边界审计见下列命令：
+模型回复、工具选择及摘要内容由替身预设。这些结果证明真实宿主的代码路径与生命周期，不证明真实模型自主等待、摘要质量、吞吐改善或生产延迟。实现提交 [c1273b5](https://github.com/ZiyueW1116/YunPianGao/commit/c1273b59a852f33cb6b746dcb46f850713b0b737) 的 [Linux x64 CI](https://github.com/ZiyueW1116/YunPianGao/actions/runs/41665570816) 全部通过：Node.js 22/24 的 check、148 项测试、公开审计和归档检查，以及原有 OpenCode 的 6 个压缩、32 个等待真实场景。Windows、其他架构、远程客户端和真实模型仍需独立验收；OpenCode 结果不代替 Claude 的 36 项目标验证。完整检查、打包和公开边界审计见下列命令：
 
 `npm run check`、`npm test`（148 项）、`npm run test:claude`（36 项）、固定版本插件校验、npm 归档与公开边界审计均通过。HTML 说明已在浏览器检查首屏与代码流排版。
 

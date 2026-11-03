@@ -21,6 +21,6 @@ for await (const message of q) consume(message)</pre><p>输入流必须持续存
 <p>close 先中断当前工具派发，再关闭 SDK；在途创建返回时重新检查取消信号。清理通过原生归属表找回已分配的子 Agent。/clear、切换和代码热重载使旧实例失效；无代码变化的 reloadPlugins 可以保留模块。独立 Bash 任务不因单次等待超时或新输入而取消。</p>
 <h2>真实执行循环的验证</h2><div class="grid"><div class="card"><p class="number">3 / 4 / 5</p><p>普通完成 / 超时后重等 / 新输入后重等或取消的父模型请求数。子 Agent 普通场景另有一次请求。</p></div><div class="card"><p class="number">0</p><p>相对预设流程的额外模型唤醒与长 sleep。测试使用本机预设模型回复，证明原生路径，不证明真实模型自主策略或性能收益。</p></div></div>
 <p>测试穿过 SDK、终端 PTY、原生工具、任务、权限、流接口和压缩。故障注入覆盖重复通知、runtime 通知遗漏、接纳回执丢失、创建失败、关闭与在途创建、同步重入和热重载。原生完整终态通知完全丢失的 Bash 恢复仍有接口缺口。</p>
-<h2>正式 defer 的边界</h2><p>defer 代表工具尚未执行，不能当作成功等待结果。固定 build 的实验记录了空字符串 resume 的额外轮次、携带新输入时的原调用放弃，恢复时可能跳过 PreToolUse 复核，以及流式双工具只留下一个 deferred 调用。产品不依赖这条路径。</p>
+<p>实现提交 <code>c1273b5</code> 的 <a href="https://github.com/ZiyueW1116/YunPianGao/actions/runs/41665570816">Linux x64 CI</a> 已通过 Node.js 22/24 检查、148 项测试、公开审计与归档验证；Windows、其他架构与真实模型仍待验收。</p><h2>正式 defer 的边界</h2><p>defer 代表工具尚未执行，不能当作成功等待结果。固定 build 的实验记录了空字符串 resume 的额外轮次、携带新输入时的原调用放弃，恢复时可能跳过 PreToolUse 复核，以及流式双工具只留下一个 deferred 调用。产品不依赖这条路径。</p>
 <div class="footer">本文件自包含样式和图示，可离线阅读。完整配置、固定版本依据、运行命令与限制见 <a href="claude.md">Claude 使用说明</a>；测试记录见 <a href="validation.md">验证文档</a>。官方定位资料：<a href="https://code.claude.com/docs/en/agent-sdk/typescript">Agent SDK</a>、<a href="https://code.claude.com/docs/en/plugins/mods/reference">Mods</a>。原生循环闭源，未对宿主打补丁或改写聊天文件。</div>
 </main></body></html>
