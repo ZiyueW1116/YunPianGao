@@ -45,6 +45,8 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 实现范围、代码流、数据流和生命周期图见[设计说明（自包含 HTML）](docs/design.html)。下载后可离线阅读和打印。
 
+新增 Harness 的接口证据、接入难度和建议顺序见[多 Harness 调研（自包含 HTML）](docs/harness-survey.html)；候选结论不代表已新增运行支持。
+
 ## 空闲压缩
 
 完整回答后，等待 `idleDelayMs`（默认 1,500 毫秒）。最近完整回答的 input、output、cache read 和 cache write 用量之和达到 `thresholdTokens`（默认 100,000）时，在主执行循环外使用 Pi 原生摘要函数生成临时结果。阈值应低于模型的原生硬压缩阈值，并为最后一轮增长留出余量。
