@@ -29,6 +29,7 @@
 <div class="eyebrow">Design document / 实现说明</div>
 <h1>云片糕 · YunPianGao<br><span>Pi Harness 与两层架构</span></h1>
 <p class="lead">两条独立的业务流程，共用一个 Pi session：在回答后的空闲窗口提前生成摘要；在后台任务尚未结束时停放推理，待结果或期限到达后接续。本文把模块归属、调用顺序和数据去向分别展开。</p>
+<p class="small">DeepSeek Harness 的独立接入、固定版本补丁与原生执行流见 <a href="deepseek-flow.html">DeepSeek 代码与数据说明</a>。</p>
 <div class="pills"><span class="pill">Pi Coding Agent SDK 1.5.0</span><span class="pill">实现基线 102c8d2</span><span class="pill">范围：进程存续期间</span><span class="pill">自包含 · 离线可读 · 可打印</span></div>
 </header>
 

@@ -132,3 +132,9 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
 
 等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
+
+## DeepSeek Harness 0.2.2-alpha.3
+
+独立 Cordis compaction 插件复用核心调度与等待状态机。原生正常结果的 `concludeTurn()` 停轮，subprocess 与 `SubagentActivation(delivery: caller)` 提供执行来源，原生 inbox 历史保证消费后的接纳去重。空闲摘要需要固定版本宿主补丁提供 `prepareSummary` 和同步 `beforeCommit`；完整原生载荷由适配层持有，核心只保留提交资格。
+
+入口、工具、信号所有权、原生维护队列、实例失效及人工交互限制见 [DeepSeek 契约](deepseek.md)。该宿主的实测结果独立记录，不使用 Pi 或 OpenCode 测试代替。

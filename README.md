@@ -34,6 +34,12 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 这是 SDK 集成入口，不能直接作为 `pi -e` 扩展加载。Pi 1.5.0 的普通扩展回调没有结束正常工具轮的返回值；SDK 使用公开的 `agent.finishTurn` 实现原生停放，详见[接口与能力边界](docs/adapters.md#pi-coding-agent-150)。
 
+## DeepSeek Harness
+
+官方 DeepSeek Harness `0.2.2-alpha.3` 的独立 Cordis 入口为 `@ziyuew1116/yunpiangao/deepseek`，需要 Node.js ≥24.9.0 和固定版本的最小宿主摘要补丁。支持原生工具停轮、进程与 activation handle 等待、空闲摘要准备及同步复核提交。正式 `dsh sdk-minimal` profile 已完成真实执行循环验证；模型提供者使用预设替身。
+
+使用、补丁、生命周期及支持边界见 [DeepSeek 接入](docs/deepseek.md)；代码流与数据流见[自包含 HTML](docs/deepseek-flow.html)。运行 `npm run test:deepseek` 可单独验收。它不通过 Pi 接入 DeepSeek 模型。
+
 ## 两层边界
 
 | 层 | 责任 | 源码 |

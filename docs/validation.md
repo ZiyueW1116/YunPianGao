@@ -99,3 +99,27 @@ OpenCode 适配器使用自定义摘要提示词，移除工具定义，并通�
 - Pi SDK 适配器针对 1.5.0；OpenCode 兼容适配器针对 2.1.4。两者使用各自原生摘要与提交接口。
 - 核心构建输出为 ESM，CI 在 Node.js 22 和 24 上运行检查与测试。
 - 其他 Harness 通过 `CompactionPort` 接入；原生不透明替换窗口需要对应的端口实现，见 [适配契约](adapters.md)。
+
+## DeepSeek Harness 0.2.2-alpha.3
+
+2026-11-03 在 macOS arm64、Node.js 26.3.1 上验证官方 npm `@deepseek-ai/dsh@0.2.2-alpha.3`，对应源码 `05b1cae8db6e674c5685101494d4eec24652424a`。npm alpha 指向该版本；查阅时 latest 已为 `0.2.1-rc.5`，没有使用浮动 latest 安装。原生摘要补丁及可重复安装方式见 [DeepSeek 说明](deepseek.md#空闲摘要与宿主补丁)。
+
+`test/deepseek-runtime.test.mjs` 有 44 个场景，运行真实 Cordis、AgentRegistry、AgentLoop、Tools pipeline、subprocess-local、SubagentActivation、BasicCompactionEngine、Session 和隔离 JSONL persistence。模型提供者是预设 StreamChunk 的本地 `LlmAdapter`，没有替换工具、任务执行、压缩提交或 Agent loop。`test/deepseek-profile.test.mjs` 另有 22 个场景，从正式 `dsh --profile sdk-minimal --patch ...` 加载插件，以官方 profile、Loader 和同一原生循环重跑任务及六个摘要场景。测试 driver 只安装模型替身并发起/观察原生操作，不作为产品启动器发布。
+
+覆盖范围：
+
+- 进程完成、注册前完成、失败、超时后重等、等待中用户输入、独立取消、interrupt、同批多个工具；子 Agent 完成、用户输入后重等、独立取消及 provider 失败。
+- 进程与子 Agent 等待期间原生 compact；摘要仍被阻塞时任务完成，原生维护队列保留接续输入，只在维护结束后进入模型。后续请求仍包含结构化依赖，原始结果不进入 system 指令。
+- 通知丢失时核心查询补偿、重复通知、接纳后回执丢失、消息消费后才发生的重试，均只有一个有效接续。通知故障只在测试中包裹原生进程完成通知，不替换进程执行；消费后重试暂时隐藏一次接纳查询，再由真实日志复核。
+- 回答后空闲准备并提交摘要；准备期间输入、提交前模型、prompt 或工具注册变化，以及异步 summarize 返回后的微任务输入使旧结果失效。不增加 fallback 模型请求。原生 summary、usage、rawOutput、llmStreamCall 与压缩后消息回放一并核对。
+- 根实例 setup、工具注册与发布失败的回滚；子 activation 准备和发布失败；close 与未发布准备、发布监听器、迟到创建回执竞争；进程 executable lookup 和同步 spawn 返回前重入 close。
+- 原生 Agent dispose、创建分支并释放旧实例、compaction 插件 fiber 实际卸载后重新加载、关闭运行中子 Agent、关闭时独立进程继续完成、压缩维护期间关闭。旧工具和 interrupt 拒绝操作，新 Agent 没有旧 handle；同步重入 close 共用同一 Promise。原生工具后置策略拒绝 wait_for 的最终结果时，本次等待被收尾。
+- 本地委派审批由宿主原生策略直接拒绝，没有调用测试 answerer。此检查证明适配保留权限策略，不证明子 Agent 的实时人工审批转发；该能力没有交付。
+
+创建失败与竞争场景在真实 SDK 对象边界加故障或门闩，部分直接调用产品注册的工具对象，不通过模型选择工具。这些场景用于资源归属与清理验证，不作为自主模型证据。测试未运行真正的文件 watcher HMR、Web UI、Windows 或 external subagent provider。
+
+进程内测试显式指定临时 cwd、工作目录、JSONL root 及服务配置；它不挂载读取用户配置的插件。profile 测试逐例使用独立 `DSH_HOME`、`DSH_AGENTS_HOME` 和临时项目，sessions 由官方 profile 写入该 home；入口保留 `workspace-write`，没有设为全权限模式。不假设 XDG，不访问既有 DSW、配置或会话库。关闭适配后的快照不再刷新，测试通过原生进程 done 等待独立执行实际退出后才删除临时目录。
+
+普通任务为 3 次父模型请求，超时重等为 4 次，用户输入后重等或取消后等待为 5 次；一般子任务另有 1 次子请求。固定权限审批负对照有 2 次子请求：请求工具和最终回答。入口与原生场景断言父请求数、等待 ID 和实际接续条目，额外唤醒及长 sleep 均为 0。完成到下一轮请求的延迟按 TaskSnapshot.finishedAt 与真实 LlmAdapter.stream 调用时间计算；本机合成观测为毫秒量级，压缩竞争包含维护队列等待，不作为性能保证。
+
+干净 `npm ci` 后运行 `npm run check`、`npm test`（178 项，含已有 Pi/OpenCode 回归）及公开文件、归档检查。Node.js 22 的 CI 运行原有适配与核心回归；DeepSeek 完整测试在 Node.js 24 上运行。模型替身预设了工具选择、回复和 usage；真实模型自主性、摘要质量与外部 provider 行为未验证。本仓库锁定依赖的 npm 审计报告 233 项问题（35 moderate、198 high），接入没有通过自动升级破坏该版本的接口锁定；该结果不能当作生产依赖安全验收。
