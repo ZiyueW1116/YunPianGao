@@ -4,7 +4,7 @@ import { setupWaitTools } from "../dist/adapters/opencode-wait.js"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const until = async (check) => {
-  for (let i = 0; i < 200; i++) { if (check()) return; await sleep(5) }
+  for (let i = 0; i < 200; i++) { if (await check()) return; await sleep(5) }
   assert.fail("适配器接续超时")
 }
 async function fixture() {
@@ -217,7 +217,12 @@ test("取消内部停车的子任务终止其等待，进程成功或等待到�
       f.setChild(undefined, [{ id: "child-prompt", type: "user" }, { id: context.messageID, type: "assistant", time: { streamed: 1 }, content: [{ type: "tool", name: "wait_for" }] }])
       await f.tools.get("wait_for").execute({ handle: handle.id, timeout }, context)
       await f.tools.get("cancel_task").execute({ handle: f.handle.id }, f.context)
-      await sleep(160); await f.plugin.reconcile()
+      await until(async () => {
+        await f.plugin.reconcile()
+        const state = { sessionID: "child", system: [] }
+        f.hooks.get("context")(state)
+        return JSON.parse(state.system[0].text.split("\n", 2)[1]).tasks.find((task) => task.handle.id === handle.id).status === "succeeded"
+      })
       assert.equal(f.resumes.filter((r) => r.sessionID === "child").length, 0)
       const event = { sessionID: "child", system: [] }
       f.hooks.get("context")(event)
@@ -666,7 +671,12 @@ test("重连复核 owner 的新中断结束等待，同代停车 idle 不结束�
       const state = { sessionID: "parent", system: [] }
       f.hooks.get("context")(state)
       assert.equal(JSON.parse(state.system[0].text.split("\n", 2)[1]).waits.at(-1).state, idle === 3 ? "delivered" : "waiting")
-      await sleep(150)
+      await until(async () => {
+        await f.plugin.reconcile()
+        const state = { sessionID: "parent", system: [] }
+        f.hooks.get("context")(state)
+        return JSON.parse(state.system[0].text.split("\n", 2)[1]).tasks.find((task) => task.handle.id === handle.id).status === "succeeded"
+      })
       assert.equal(f.resumes.length, idle === 3 ? 0 : 1)
       if (idle === 2) assert.equal(f.resumes[0].metadata.reason, "succeeded")
     } finally { await f.plugin.close() }

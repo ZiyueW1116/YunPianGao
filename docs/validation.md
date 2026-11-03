@@ -1,6 +1,32 @@
 # 验证范围
 
-## 公开测试
+## Pi Coding Agent 1.5.0
+
+主要验收使用 npm 锁定的 `@earendil-works/pi-coding-agent@1.5.0`，对应官方 tag `v1.5.0`。官方 [SDK](https://pi.dev/docs/latest/sdk)、[扩展](https://pi.dev/docs/latest/extensions) 和[模型](https://pi.dev/docs/latest/models) 文档用于定位能力；具体签名与执行顺序以安装包声明和[固定版本源码](adapters.md#pi-coding-agent-150)为准。对象为正式 Coding Agent SDK，没有使用 Pi Durable。
+
+`test/pi-runtime.test.mjs` 通过产品 `createPiSession` 入口加载 inline extension，调用原生 `bindExtensions`、`prompt`、工具执行、`finishTurn`、custom message、SessionManager 和 compact。模型服务是仅监听本机回环地址的 OpenAI-compatible SSE 替身，未替换 SDK 的工具或执行循环。`npm test` 包含这些场景；`npm run test:pi` 可单独运行。
+
+20 个场景覆盖：
+
+- 后台进程完成、提前完成、非零退出、超时后同一 handle 重等、等待中用户输入及重等、独立取消、显式 interrupt、接纳回执丢失后的去重，以及模型请求期间新输入使旧等待意图失效。
+- 进程与子 Agent 等待期间原生 compact；任务在摘要请求仍阻塞时完成，只在 compact 结束后接续，压缩后的请求仍收到结构化依赖。
+- 独立 Pi 子 session 完成、用户输入后重等、独立取消、provider 失败，父 session 实际接续。
+- 同一工具批次含等待和另一个进程启动时，两者都正常返回，在原生轮边界停放；没有 OpenCode 的单工具中断限制。
+- 回答后的空闲期准备并提交摘要；准备期间新输入使结果失效；准备完成后、提交边界前系统提示变化时拒绝旧摘要，不额外调用原生摘要模型作为 fallback。
+
+通用 `wait.test.mjs` 另覆盖注册前完成、重复通知、完成与期限竞争、查询失败与断线补偿、需要介入及解除、一次有效接续、handle 归属、取消与卸载。`scheduler.test.mjs` 覆盖阈值、输入竞争、失效、重复触发、指纹及生命周期。Pi 进程内事件不经过远端 SSE，未照搬 OpenCode 的重连或 idle 推断补丁。
+
+隔离方式按 1.5.0 的 SDK 与 config 源码核实：每例使用临时 cwd、显式 `agentDir`、`SessionManager.create(cwd, sessionDir)`；ModelRuntime 显式指定临时 `authPath`、`modelsPath` 与 `modelsStorePath`，禁用初始模型刷新。测试进程还设置 `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 与 `PI_OFFLINE`，隔离主题、辅助二进制和默认会话路径；不假设遵循 XDG。无扩展包配置、无现有用户配置、无外部服务请求，任务状态在内存中。清理前等待独立进程实际退出，再删除临时目录。上海 DSW 服务、配置和会话库不参与测试。
+
+2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；本次单独 Pi 运行观测为 1–12 毫秒，不是性能保证。
+
+验收命令 `npm run check`、`npm test`（91 项）、`npm run test:pi`（20 项）、`npm run audit:public` 与 npm 归档内容检查均通过。OpenCode 兼容入口另外通过 6 个压缩和 32 个等待真实场景；这些结果不代替 Pi 验收。
+
+模型回复、工具选择及用量均由替身预设。上述结果证明 Pi 真实 SDK 的执行与接续路径，不证明真实模型自主选择 `wait_for`、摘要质量、性能改善或生产延迟。真实模型对照评估、Windows 和扩展 UI 请求转发仍未验证。
+
+## OpenCode 兼容验证
+
+### 公开测试
 
 调度测试覆盖阈值、成功与失败事件、新输入竞争、过期结果丢弃、提交指纹变化、跨会话隔离、重复触发、失败恢复、direct 策略和卸载取消。
 
@@ -8,7 +34,7 @@
 
 测试回复和 token 用量由本地服务预设，无需外部模型账号。公开测试覆盖调度和会话接续，未包含真实模型的摘要质量或吞吐量基准。
 
-## 任务等待验证
+### 任务等待验证
 
 `test/wait.test.mjs` 覆盖成功、失败、取消、介入解除后无事件再次等待、先完成后注册、超时后再次等待、完成与超时竞争、输入与中断、期限调整、通知遗漏、查询断线、仅查询端口、接续响应丢失重试、状态副本、handle 归属和卸载。强停止等待覆盖未激活、等待重试、在途投递成功与失败；卸载检查已发起取消请求的清理完成。`test/opencode-wait.test.mjs` 验证宿主中断通知晚到、固定 synthetic 标识、流式输出中的并行工具检查、新输入版本、子会话原始输入被压缩移除、内部停车与外部中断的 idle 归属、取消停车中的子任务、删除子会话、停车失败收尾、旧停车回执及旧中断查询不影响新等待、表单创建与关闭、单任务取消回执，以及任务结果不会进入系统指令。`test/adapter.test.mjs` 验证事件订阅重连与卸载。
 
@@ -46,13 +72,13 @@ OPENCODE_BIN=/absolute/path/to/opencode npm run test:runtime
 
 2026-11-03 的 macOS arm64 检查中，正常启动、等待、接续共 3 次父模型请求；超时后再次等待为 4 次；用户输入后独立取消再等待或权限批准后重等为 5 次；删除 owner 或外部中断后停在 2 次。完整 32 场景均无额外模型唤醒或长 `sleep` 调用。部分内部停车后取消场景的快照时间沿用宿主此前停车的 `idle`，输出的时间差包含取消前的停留时间。该记录是本地合成检查的观测值，不是性能保证。真实模型是否主动选择 `wait_for`、相对固定休眠或模型轮询的改善幅度，以及平台差异，仍按 [TODO](todo.md) 单独验证。
 
-## 摘要生成
+### OpenCode 摘要生成
 
 OpenCode 适配器使用自定义摘要提示词，移除工具定义，并通过 `maxTokens` 请求最多 4,096 output tokens。返回的摘要须包含七个指定标题，具体提示词见 [适配器源码](../src/adapters/opencode.ts)。
 
 这些生成设置与 OpenCode 原生同步摘要的提示词、工具定义和预算不同。`maxTokens` 的实际约束由模型服务实现，部分入口可能忽略或重新解释该字段。
 
-## 模型评估
+## 真实模型评估
 
 评估摘要质量时，应检查历史事实和精确标识的保留情况、用户要求的作用范围，以及仅限上一轮的临时限制是否被带入后续任务，并记录摘要后的任务接续结果。
 
@@ -60,6 +86,6 @@ OpenCode 适配器使用自定义摘要提示词，移除工具定义，并通�
 
 ## 兼容范围
 
-- OpenCode 适配器针对 2.1.4，使用文本摘要接口。
+- Pi SDK 适配器针对 1.5.0；OpenCode 兼容适配器针对 2.1.4。两者使用各自原生摘要与提交接口。
 - 核心构建输出为 ESM，CI 在 Node.js 22 和 24 上运行检查与测试。
 - 其他 Harness 通过 `CompactionPort` 接入；原生不透明替换窗口需要对应的端口实现，见 [适配契约](adapters.md)。

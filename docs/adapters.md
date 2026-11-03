@@ -1,5 +1,11 @@
 # Harness 适配契约
 
+## 两层依赖
+
+核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
+
+核心保留已有调度器和等待状态机；不变的是语义与依赖方向，代码可随已验证契约修改。没有通用 Harness 基类、动态注册平台、多层工厂或独立持久化任务框架。
+
 `createYunPianGao(port, options)` 创建一个进程内调度器。会话标识用于隔离状态；token 阈值针对最近完整回答的用量，不是历史累计计费量。
 
 ## 事件
@@ -20,7 +26,7 @@
 
 该复核与提交必须属于同一原生提交边界，不能先检查、再让其他任务改变上下文、最后写入旧结果。宿主也必须保留已经排队的新用户输入。
 
-`compact` 可以只确认入队；`wait` 负责等待控制项完成。完成前调度器会持有准备结果，以便提交回调消费。参考实现见 [OpenCode 适配器](../src/adapters/opencode.ts)。
+`compact` 可以只确认入队；`wait` 负责等待控制项完成。完成前调度器会持有准备结果，以便提交回调消费。参考实现见 [Pi 适配器](../src/adapters/pi.ts) 与 [OpenCode 适配器](../src/adapters/opencode.ts)。
 
 ## 生命周期
 
@@ -32,7 +38,7 @@
 
 核心以文本传递摘要。需要加密、不透明或结构化 replacement window 的 Harness 须实现并验证对应端口；provider 原生对象不能直接作为文本摘要提交。
 
-OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核模型、系统指令和消息历史。摘要提示词、工具定义和输出预算见 [验证文档](validation.md)。
+OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型、系统指令和消息历史。摘要提示词、工具定义和输出预算见 [验证文档](validation.md)。
 
 ## 任务等待
 
@@ -63,6 +69,32 @@ OpenCode 适配器默认使用 `prepare-then-commit` 策略，在提交时复核
 `snapshot(sessionID)` 返回结构化任务与等待副本，包含 handle、执行标识、期限、状态、恢复原因及结果。宿主应把依赖状态接入后续上下文，不能仅依赖可能被压缩的聊天文本。OpenCode 的系统上下文只注入依赖元数据；原始输出通过工具结果或 synthetic 输入传递，需要时可以再次等待同一 handle 获取缓存的终态结果。
 
 `close()` 解除订阅、停止定时器、取消本地请求并等待其退出，包括已发起的 `cancel` 请求；关闭本身不调用任务的 `cancel`。端口的异步操作必须响应取消信号。状态、任务结果和已结束等待保留到该 runtime 实例被释放，不提供跨重启恢复。
+
+### Pi Coding Agent 1.5.0
+
+`createPiSession(options, scheduling)` 是正式 SDK 入口，返回原生 `session`、创建结果、`snapshot()`、`interrupt()` 和异步 `close()`。`scheduling` 采用核心的阈值及空闲延迟，仅支持 `prepare-then-commit`。适配器拥有 `DefaultResourceLoader`，通过 inline extension 注册工具和事件；调用方使用原生 `bindExtensions` 绑定运行模式与 UI。每个适配实例对应一个 session 生命周期，不支持原地 reload 后继续复用。
+
+原生 `agent.finishTurn` 的 `end` 决策在工具成功返回后结束执行，不中断工具，也不清空宿主输入队列。适配器保留 Pi 已安装的轮边界处理，再为包含 `wait_for` 的轮选择 `end`。同批其他工具先正常完成，一轮最多注册一次等待。`agent_settled` 激活 runtime 等待；提前完成或零期限结果在激活前暂存。用户输入在旧模型请求期间到达时，输入版本检查拒绝过期等待意图；等待中收到输入时，仅结束该次等待。`interrupt()` 明确结束本次等待并调用原生 abort。
+
+接续使用 `session.sendCustomMessage(..., {triggerTurn:true, deliverAs:"followUp"})`；ID 保存在 `details`，通过原生内存会话条目复核已接纳消息。调用失败时，若已持久化对应 ID 则不重复启动；未接纳时由核心按相同 ID 重试。Pi API 在进程内调用，没有 OpenCode SSE 重连问题。TaskSource 的事件和查询来自本地执行状态；核心的周期复核仍覆盖通知遗漏。模型请求的完成不依赖插件推断 idle 时间或读取聊天库。
+
+进程源与 OpenCode 共用 [process.ts](../src/adapters/process.ts)。不经 shell、64 KiB 输出尾部、POSIX 进程组 SIGTERM、Windows 单进程 SIGTERM 及协作取消边界一致。子 Agent 由 `createAgentSession` 创建独立会话，共享当前 `ModelRuntime`、模型和目录，沿用 Pi 配置，使用原生工具且禁用扩展。完成以该次 `prompt` 的最终结果确认；失败、取消与完成时间写入 TaskSnapshot，不根据压缩控制项判断任务结果。
+
+Pi 没有 OpenCode 的 Agent 清单或原生权限审批协议。这里的 `start_subagent` 不接收 `agent` 参数；也不模拟 permission、question 或 form 事件。禁用扩展的原生子 session 没有可转发的介入请求；核心的 `input_required` 契约及回归仍保留，扩展 UI 请求转发未实现。取消子 Agent 只终止该次 session 推理；它执行工具产生的外部副作用按 Pi 原生取消语义处理。
+
+空闲准备调用 Pi 的 `generateSummaryWithUsage`，经当前 `ModelRuntime.streamSimple` 使用相同模型和认证，主 session 不增加用户消息。生成输入是原生当前投影，未挂载工具声明。指纹覆盖输入版本、模型、系统提示、原生分支与依赖元数据。提交调用原生 `session.compact()`；最后加载的 inline extension 在 `session_before_compact` 中调用核心 `takePrepared`，不匹配时返回 `cancel`，避免 Pi 吞掉 hook 异常后退回生成。成功时提供摘要和原生 preparation 的 `firstKeptEntryId`、`tokensBefore`，让宿主持久化并刷新投影。摘要覆盖完整投影，因此原生保留尾部可能与摘要重复。临时摘要请求的 usage 不写入主 session 的统计。
+
+Pi 手动 compact 先调用 abort；停放 session 已无执行循环，因此不需要取消补丁。compact 期间就绪的等待保持结构化记录，直到 `compaction_end` 后才接续。准备期间的新输入使摘要失效；compact 提交期间原生拒绝新 prompt，嵌入方必须保留被拒绝的输入。模型切换使摘要失效并取消在途 compact。公开 API 没有跨所有外部扩展副作用的通用事务或 CAS；集成方不得在本适配器复核之后直接改写会话或覆盖其原生边界 hook。
+
+普通 CLI 扩展的 `turn_end` 只可要求继续，不能返回 SDK 的 `end` 决策；工具 hook 的 `terminate` 仅适用于阻止工具调用。本入口使用 SDK 提供的正式边界，不把正常等待伪装成被阻止的工具，不提供 `pi -e` 加载方式。源码与声明按 npm 包及 tag `v1.5.0` 核对：
+
+- [SDK](https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/sdk.ts)：`agentDir`、`sessionManager`、ModelRuntime 和资源加载。
+- [Agent 轮边界](https://github.com/earendil-works/pi/blob/v1.5.0/packages/agent/src/agent-loop.ts)：正常工具结果后接受 `finishTurn` 的 `end`。
+- [AgentSession](https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/agent-session.ts)：custom message、compact hook、输入拒绝与 `agent_settled`。
+- [扩展类型](https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/extensions/types.ts)：工具、事件和扩展边界结果。
+- [配置路径](https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/config.ts)：Pi 目录变量；不按 XDG 推断。
+
+当前只覆盖进程存续期间。`snapshot` 在压缩后仍可读取，但重启、关闭、session replacement 或 reload 后不能恢复 handle。关闭停止等待与接续，abort 本适配器拥有的子 session，并释放 SDK 资源；独立进程不被隐式取消。
 
 ### OpenCode 2.1.4
 

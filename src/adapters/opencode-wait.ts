@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { launchProcess } from "./process.js"
 import { setTimeout as delay } from "node:timers/promises"
 import type { Plugin } from "@opencode/plugin"
 import { Error as ToolError, type ToolContext } from "@opencode/plugin/promise/tool"
@@ -140,42 +140,9 @@ export async function setupWaitTools(ctx: Context) {
           const input = raw as { command: string; args: string[] }
           await allow(context, "yunpiangao.process", JSON.stringify([input.command, ...input.args]))
           context.signal.throwIfAborted()
-          let snapshot: TaskSnapshot = { status: "working" }
-          let output = Buffer.alloc(0), truncated = false
-          let cancelRequested = false
-          const changed = new Set<() => void>()
-          const child: ChildProcess = spawn(input.command, input.args, { cwd: ctx.location.directory, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] })
-          const collect = (chunk: Buffer) => {
-            const combined = Buffer.concat([output, chunk])
-            truncated ||= combined.length > 65536
-            output = combined.subarray(Math.max(0, combined.length - 65536))
-          }
-          child.stdout?.on("data", collect)
-          child.stderr?.on("data", collect)
-          const changedState = () => { for (const notify of changed) notify() }
-          child.once("error", () => { snapshot = { status: "failed", finishedAt: Date.now(), error: "无法启动进程。" }; changedState() })
-          child.once("close", (exitCode, signal) => {
-            if (snapshot.status !== "failed") snapshot = {
-              status: cancelRequested && signal === "SIGTERM" ? "cancelled" : exitCode === 0 ? "succeeded" : "failed",
-              finishedAt: Date.now(),
-              result: { exitCode, signal, output: output.toString("utf8"), truncated },
-            }
-            changedState()
-          })
-          child.unref()
+          const task = launchProcess(input.command, input.args, ctx.location.directory)
           owners.add(context.sessionID)
-          const handle = runtime.register(context.sessionID, "process", `${context.id}:${child.pid ?? "spawn-error"}`, {
-            async read() { return snapshot },
-            subscribe(notify) { changed.add(notify); return () => { changed.delete(notify) } },
-            async cancel() {
-              if (snapshot.status !== "working") return
-              cancelRequested = true
-              try {
-                if (process.platform === "win32") child.kill("SIGTERM")
-                else if (child.pid) process.kill(-child.pid, "SIGTERM")
-              } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error }
-            },
-          })
+          const handle = runtime.register(context.sessionID, "process", task.executionID, task.source)
           return textResult({ handle, instruction: "需要结果时单独调用 wait_for。取消等待不会取消进程；取消任务请调用 cancel_task。" })
         },
       })
