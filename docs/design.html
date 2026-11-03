@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="云片糕 YunPianGao 的 Pi Coding Agent SDK 适配设计：实现范围、两层边界、代码流、数据流、生命周期和验证证据。">
+<title>云片糕 · YunPianGao — Pi Harness 设计说明</title>
+<style>
+:root{--bg:#f5f6f2;--paper:#fff;--ink:#1e302e;--muted:#5d6e68;--line:#dce3db;--core:#146653;--core-bg:#e8f2ed;--pi:#4a56a0;--pi-bg:#eef0fb;--warm:#8b5b23;--warm-bg:#fbf2df;--code:#152e2a;--radius:14px;scroll-behavior:smooth}
+*{box-sizing:border-box}body{margin:0;overflow-x:clip;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;font-size:16px;line-height:1.8}a{color:var(--core);text-underline-offset:4px}button,select{font:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #91b6aa;outline-offset:4px}code,pre,.mono{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}code{font-size:.86em;overflow-wrap:anywhere;background:#edf0ec;border-radius:4px;padding:2px 5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--code);color:#e7f3ec;padding:22px;border-radius:10px;font-size:12.5px;line-height:1.8;margin:14px 0}pre code{background:none;padding:0;color:inherit;font-size:inherit}.shell{display:grid;grid-template-columns:235px minmax(0,1fr);max-width:1580px;margin:auto}.sidebar{position:sticky;top:0;height:100vh;padding:32px 22px 24px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:20px;background:var(--bg);overflow:auto}.brand{font-size:23px;letter-spacing:.04em;font-weight:750}.brand small{display:block;font-size:11px;letter-spacing:.16em;font-weight:500;color:var(--muted)}.side-meta{font-size:12px;color:var(--muted);line-height:1.9}.nav{display:flex;flex-direction:column;gap:3px}.nav a{text-decoration:none;color:var(--muted);font-size:13px;display:flex;gap:12px;padding:9px 10px;border-radius:7px}.nav a:hover,.nav a.active{background:var(--core-bg);color:var(--core)}.nav a span{font-size:11px;opacity:.7;align-self:center}.print{margin-top:auto;border:1px solid var(--line);border-radius:8px;background:var(--paper);padding:10px 12px;font-size:13px;color:var(--ink)}main{min-width:0;padding:44px 54px 72px}.eyebrow{font-size:11px;color:var(--core);letter-spacing:.16em;font-weight:700;text-transform:uppercase}.hero{padding-bottom:36px;border-bottom:1px solid var(--line)}h1{font-size:clamp(30px,3.2vw,46px);letter-spacing:-.04em;line-height:1.25;margin:18px 0 20px;font-weight:750}h1 span{color:var(--core)}.lead{max-width:820px;font-size:17px;color:var(--muted);margin:0 0 24px}.pills{display:flex;flex-wrap:wrap;gap:8px}.pill{display:inline-block;border:1px solid var(--line);background:var(--paper);border-radius:30px;padding:4px 12px;font-size:11px;color:var(--muted)}section{padding:42px 0 0;scroll-margin-top:20px}h2{font-size:26px;letter-spacing:-.025em;line-height:1.4;margin:0 0 15px}.section-id{display:inline-block;margin-right:12px;color:var(--core);font-size:12px;font-weight:600;vertical-align:middle}h3{font-size:17px;line-height:1.5;margin:22px 0 10px}p{margin:10px 0 15px}.sub{font-size:14px;color:var(--muted)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:var(--paper);padding:24px;border:1px solid var(--line);border-radius:var(--radius);min-width:0}.card h3:first-child{margin-top:0}.tag{display:inline-block;font-size:11px;font-weight:650;padding:3px 8px;border-radius:5px;background:var(--core-bg);color:var(--core);margin-bottom:10px}.tag.pi{background:var(--pi-bg);color:var(--pi)}.tag.limit{background:var(--warm-bg);color:var(--warm)}.callout{border-left:3px solid var(--core);padding:14px 19px;background:var(--core-bg);border-radius:0 9px 9px 0;margin:18px 0;font-size:14px}.callout.limit{border-color:var(--warm);background:var(--warm-bg)}.callout p{margin:0}.metric strong{display:block;font-size:31px;line-height:1.25;letter-spacing:-.03em}.metric span{font-size:12px;color:var(--muted)}ul,ol{padding-left:22px;margin:10px 0}li{margin:6px 0}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;color:var(--muted);font-size:11px;letter-spacing:.02em;font-weight:650;background:#f0f3ee}th,td{padding:13px 14px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.table-wrap{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--paper);margin:16px 0}td:first-child{font-weight:600}.diagram{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:22px 18px;margin:18px 0;overflow:auto}.diagram svg{display:block;width:100%;height:auto;min-width:680px}.diagram text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:var(--ink);font-size:14px}.diagram .svg-small{font-size:12px;fill:var(--muted)}.diagram .svg-label{font-size:11px;letter-spacing:1px;fill:var(--muted)}.diagram .svg-title{font-size:16px;font-weight:700}.caption{font-size:12px;color:var(--muted);margin:12px 0 0}.legend{font-size:12px;display:flex;flex-wrap:wrap;gap:18px;color:var(--muted)}.legend i{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:6px}.core-dot{background:var(--core)}.pi-dot{background:var(--pi)}.host-dot{background:#84938b}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.flow .step{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:19px 16px;min-width:0}.flow .step:not(:last-child):after{content:"→";position:absolute;right:-13px;top:37px;z-index:1;color:var(--core);background:var(--bg);line-height:20px}.step b{display:block;font-size:14px;line-height:1.5;margin:8px 0}.step p{font-size:12px;color:var(--muted);margin:0}.step .num{font-size:11px;color:var(--core);font-weight:750}.sequence{width:100%;font-size:13px;min-width:680px}.sequence th{font-size:12px;text-align:center}.sequence td{padding:13px 10px;border-right:1px dashed var(--line);font-weight:400;width:25%}.sequence tr td:first-child{border-left:0}.sequence td:last-child{border-right:0}.msg{display:block;border-radius:7px;padding:9px 12px;background:var(--core-bg);line-height:1.6}.msg.pi{background:var(--pi-bg)}.msg.neutral{background:#f0f3ee}.msg .label{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.sequence .hold{color:var(--muted);text-align:center;font-size:12px}.state-row{display:flex;align-items:center;gap:14px;justify-content:center;flex-wrap:wrap;padding:24px 12px;border-radius:12px;background:var(--paper);border:1px solid var(--line);margin:16px 0}.state{padding:10px 22px;border-radius:8px;background:var(--core-bg);color:var(--core);font:600 14px "SFMono-Regular",Consolas,monospace}.state-row .arrow{color:var(--muted);font-size:12px;line-height:1.5;text-align:center}.two-epochs{display:grid;grid-template-columns:1fr 1fr;gap:16px}.small{font-size:12px;color:var(--muted)}.read-code{display:grid;grid-template-columns:1fr 1fr;gap:16px}.read-code details{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:14px 18px;min-width:0}.read-code summary{cursor:pointer;font-size:13px;font-weight:650;line-height:1.7}.read-code details pre{font-size:11.5px;line-height:1.7}.explorer{border:1px solid var(--line);background:var(--paper);border-radius:14px;overflow:hidden;margin:20px 0}.explorer-head{padding:19px 24px;background:#eff3ee;display:flex;align-items:center;justify-content:space-between;gap:20px}.explorer-head label{font-size:13px;font-weight:650}.explorer select{border:1px solid var(--line);border-radius:7px;padding:8px 10px;background:var(--paper);color:var(--ink);font-size:13px;max-width:320px}.explorer-body{padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px}.explorer ol{list-style:none;padding:0;margin:0;counter-reset:steps}.explorer li{margin:0 0 8px}.walk-step{display:flex;width:100%;text-align:left;gap:12px;align-items:flex-start;background:var(--paper);border:1px solid transparent;border-radius:8px;padding:11px 10px;color:var(--muted);font-size:13px;line-height:1.6}.walk-step span{background:#edf1eb;color:var(--muted);width:23px;height:23px;flex:0 0 23px;border-radius:50%;font-size:11px;text-align:center;line-height:23px}.walk-step[aria-current="step"]{border-color:#bdd3c6;background:var(--core-bg);color:var(--ink)}.walk-step[aria-current="step"] span{background:var(--core);color:#fff}.walk-note{font-size:13px;min-height:70px}.walk-meta{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}.controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:15px}.controls button{border:1px solid var(--line);background:var(--paper);border-radius:7px;padding:7px 14px;color:var(--ink);font-size:12px}.controls button:disabled{opacity:.4;cursor:default}.walk-source{font-size:11px;color:var(--pi);overflow-wrap:anywhere}.baseline{font-size:12px;padding-top:28px;border-top:1px solid var(--line);margin-top:40px;color:var(--muted)}.source-list{font-size:12px;columns:2;column-gap:30px}.source-list li{break-inside:avoid;margin-bottom:10px;overflow-wrap:anywhere}.footmark{float:right;color:var(--core);font-weight:650}.no-script{margin:0 24px 18px;font-size:13px}.screen-only{}.skip{position:absolute;left:-9999px}.skip:focus{left:20px;top:10px;background:white;padding:10px;z-index:5}
+@media(min-width:1500px){main{padding-right:75px;padding-left:65px}}@media(max-width:1100px){.shell{grid-template-columns:195px minmax(0,1fr)}.sidebar{padding:25px 15px}.brand{font-size:20px}main{padding:35px 30px 60px}.flow{grid-template-columns:1fr 1fr}.flow .step:nth-child(2):after{display:none}}@media(max-width:760px){.shell{display:block}.sidebar{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:18px 20px;display:block}.brand{font-size:21px}.brand small{display:inline;margin-left:12px}.side-meta,.print{display:none}.nav{flex-direction:row;overflow:auto;margin-top:14px;gap:4px}.nav a{white-space:nowrap;padding:7px 10px;font-size:12px}.nav a span{display:none}main{padding:28px 20px 45px}.hero{padding-bottom:25px}section{padding-top:32px}h2{font-size:23px}.grid2,.two-epochs,.read-code,.explorer-body{grid-template-columns:1fr}.grid3{grid-template-columns:repeat(3,1fr);gap:8px}.card{padding:18px}.metric strong{font-size:25px}.metric span{font-size:10px}.explorer-head{align-items:flex-start;flex-direction:column;gap:10px}.explorer select{width:100%;max-width:none}.explorer-body{padding:18px;gap:14px}.source-list{columns:1}.diagram{padding:16px 12px}.lead{font-size:15px}.diagram svg{min-width:650px}.flow .step{padding:15px 12px}table{font-size:12px}th,td{padding:11px 12px}.footmark{float:none;display:block;margin-top:8px}}
+@media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
+@media print{.code-map th:first-child{width:32%}.code-map td:first-child code{white-space:nowrap;font-size:8pt}@page{size:A4;margin:15mm}body{background:white;font-size:10pt;line-height:1.65;color:#111}.shell{display:block;max-width:none}.sidebar,.screen-only,.explorer{display:none!important}main{padding:0}.hero{padding-bottom:18px}h1{font-size:27pt}h2{font-size:18pt;break-after:avoid}h3{font-size:12pt;break-after:avoid}section{padding-top:24px;scroll-margin:0}.lead{font-size:11pt}.card,.diagram,.callout{break-inside:avoid}.diagram svg{min-width:0}.sequence{min-width:0;font-size:9pt}table{font-size:9pt}th,td{padding:8px}.table-wrap{overflow:visible}.grid2{gap:12px}.grid3{gap:10px}.flow{grid-template-columns:repeat(4,1fr)}.flow .step{padding:12px}.flow .step p{font-size:8pt}.read-code{display:block}.read-code details{margin-bottom:12px}.read-code details>*{display:block}.read-code summary{font-size:10pt}.read-code details pre{font-size:8pt}pre{background:#f0f3ee;color:#111;font-size:9pt}.source-list{font-size:8pt}.pill{font-size:8pt}.caption,.small,.sub{font-size:9pt}.baseline{font-size:8pt}.tag{font-size:8pt}a{color:inherit;text-decoration:none}.state{font-size:10pt}.footmark{float:none;display:block}tr{break-inside:avoid}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+<div class="shell">
+<aside class="sidebar" aria-label="文档目录">
+<div class="brand">云片糕<small>YUN PIAN GAO</small></div>
+<div class="side-meta">Pi Harness 设计说明<br>代码、状态与宿主边界<br><code>102c8d2</code> · 2026-11-03</div>
+<nav class="nav">
+<a href="#scope"><span>01</span>实现范围</a><a href="#architecture"><span>02</span>两层架构</a><a href="#entry"><span>03</span>入口与代码地图</a><a href="#wait-flow"><span>04</span>等待的代码流</a><a href="#data"><span>05</span>状态与数据流</a><a href="#compaction"><span>06</span>压缩的代码流</a><a href="#cooperation"><span>07</span>等待 × 压缩</a><a href="#walkthrough"><span>08</span>场景逐步阅读</a><a href="#lifecycle"><span>09</span>生命周期与集成</a><a href="#evidence"><span>10</span>验证与能力边界</a><a href="#source"><span>11</span>源码索引</a>
+</nav>
+<button class="print screen-only" type="button" id="print-btn">打印 / 导出 PDF</button>
+</aside>
+<main id="main">
+<header class="hero">
+<div class="eyebrow">Design document / 实现说明</div>
+<h1>云片糕 · YunPianGao<br><span>Pi Harness 与两层架构</span></h1>
+<p class="lead">两条独立的业务流程，共用一个 Pi session：在回答后的空闲窗口提前生成摘要；在后台任务尚未结束时停放推理，待结果或期限到达后接续。本文把模块归属、调用顺序和数据去向分别展开。</p>
+<div class="pills"><span class="pill">Pi Coding Agent SDK 1.5.0</span><span class="pill">实现基线 102c8d2</span><span class="pill">范围：进程存续期间</span><span class="pill">自包含 · 离线可读 · 可打印</span></div>
+</header>
+
+<section id="scope">
+<h2><span class="section-id">01</span>代码实际负责什么</h2>
+<p>云片糕是嵌入 Pi 的进程内能力。它管理摘要调度与任务等待的业务语义，通过适配层调用宿主的执行、模型和会话接口。实际模型推理、工具循环和聊天持久化由 Pi 管理。</p>
+<div class="grid2">
+<article class="card"><span class="tag">摘要调度域</span><h3>先准备，再复核提交</h3><p class="sub">完整回答后检查 token 阈值，在主执行循环外准备摘要。新输入使旧结果失效；原生 compact 提交前，再比较上下文指纹。</p><p class="small">拥有：空闲代次、延迟计时器、临时摘要与提交资格。</p></article>
+<article class="card"><span class="tag">任务等待域</span><h3>一次执行，可以等待多次</h3><p class="sub">启动进程或子 Agent 后返回具体执行的 handle。一次等待有独立期限和结束原因；超时、输入或停止等待不会隐式取消任务。</p><p class="small">拥有：任务快照、等待记录、结算竞争、激活与接续重试。</p></article>
+</div>
+<div class="callout limit"><p><strong>明确边界：</strong>主要入口是正式 Pi Coding Agent SDK，尚无可直接用 <code>pi -e</code> 加载的独立扩展入口。没有 Pi Durable、跨重启任务恢复、通用 Harness 平台或独立聊天数据库。</p></div>
+<div class="table-wrap"><table><thead><tr><th>对象</th><th>谁拥有</th><th>云片糕的实现范围</th></tr></thead><tbody>
+<tr><td>Agent 执行循环、模型请求、会话树</td><td>Pi SDK</td><td>调用公开接口；在原生轮边界决定停放，使用原生消息发起接续。</td></tr>
+<tr><td>摘要何时准备、何时失效</td><td>核心 scheduler</td><td>业务规则、空闲代次、阈值、摘要消费资格。</td></tr>
+<tr><td>任务与单次等待</td><td>核心 wait runtime</td><td>handle 归属、期限、结束原因、一次有效投递及结构化快照。</td></tr>
+<tr><td>操作系统进程、独立 Pi 子 session</td><td>适配层</td><td>创建实际执行、采集结果、处理取消信号，转成 TaskSource。</td></tr>
+<tr><td>模型是否主动选择 wait_for</td><td>模型行为，尚未验证</td><td>工具说明引导模型；当前合成测试不证明自主工具选择。</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="architecture">
+<h2><span class="section-id">02</span>两层架构：语义在核心，接口在适配</h2>
+<p>源码依赖由适配层指向核心层。核心用端口描述实际调用边界；Pi SDK、宿主消息和工作目录只出现在适配层。图中的宿主设施属于外部系统，不构成云片糕的第三层。</p>
+<div class="diagram">
+<svg viewBox="0 0 1000 520" role="img" aria-labelledby="arch-title arch-desc">
+<title id="arch-title">云片糕的两层模块与源码依赖</title><desc id="arch-desc">应用创建 Pi 适配实例。Pi 和 OpenCode 适配器依赖核心 scheduler 与 wait runtime；Pi 适配器另依赖外部 Pi SDK 和共用进程源，进程源调用 Node 子进程接口。核心不反向导入适配器或宿主 SDK。</desc>
+<defs><marker id="arrow-arch" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#73867c"/></marker></defs>
+<rect x="20" y="16" width="960" height="68" rx="10" fill="#f0f3ee"/><text x="44" y="43" class="svg-label">调用方 / 嵌入应用</text><text x="44" y="66">createPiSession(options, scheduling) → bindExtensions() → prompt()</text>
+<path d="M 233 84 L 233 119" fill="none" stroke="#73867c" stroke-width="1.8" marker-end="url(#arrow-arch)"/>
+<rect x="20" y="122" width="960" height="163" rx="12" fill="#eef0fb"/><text x="44" y="149" class="svg-label">适配层 · src/adapters/</text>
+<rect x="44" y="168" width="355" height="91" rx="9" fill="#fff" stroke="#d8ddeb"/><text x="64" y="194" class="svg-title">Pi 适配器 · pi.ts</text><text x="64" y="217">工具 / 事件 / 原生停放与接续</text><text x="64" y="240" class="svg-small">摘要准备、compact hook、session 清理</text>
+<rect x="431" y="168" width="238" height="91" rx="9" fill="#fff" stroke="#d8ddeb"/><text x="450" y="194" class="svg-title">进程源 · process.ts</text><text x="450" y="217">spawn / 输出尾部 / SIGTERM</text><text x="450" y="240" class="svg-small">Pi 与 OpenCode 共用</text>
+<rect x="701" y="168" width="255" height="91" rx="9" fill="#fff" stroke="#d8ddeb"/><text x="720" y="194" class="svg-title">OpenCode 兼容适配</text><text x="720" y="217">opencode.ts / opencode-wait.ts</text><text x="720" y="240" class="svg-small">保留该宿主专用桥接</text>
+<path d="M 399 212 L 427 212 M 701 237 L 674 237" stroke="#73867c" stroke-width="1.6" fill="none" marker-end="url(#arrow-arch)"/>
+<path d="M 146 285 L 146 355 M 303 285 L 303 355 M 774 285 L 774 319 L 453 319 L 453 355" stroke="#73867c" stroke-width="1.8" fill="none" marker-end="url(#arrow-arch)"/>
+<text x="40" y="311" class="svg-small">源码依赖 ↓</text><text x="153" y="345" class="svg-small">CompactionPort · TaskSource · WaitPort</text>
+<rect x="20" y="357" width="625" height="143" rx="12" fill="#e8f2ed"/><text x="44" y="385" class="svg-label">核心层 · 无 Harness SDK 依赖</text>
+<rect x="44" y="404" width="268" height="72" rx="9" fill="#fff" stroke="#d1e1d6"/><text x="62" y="430" class="svg-title">scheduler.ts</text><text x="62" y="455" class="svg-small">阈值、空闲代次、失效与指纹资格</text>
+<rect x="332" y="404" width="289" height="72" rx="9" fill="#fff" stroke="#d1e1d6"/><text x="350" y="430" class="svg-title">wait.ts</text><text x="350" y="455" class="svg-small">任务、等待、结算、激活与重试</text>
+<rect x="695" y="357" width="285" height="143" rx="12" fill="#f0f3ee"/><text x="716" y="385" class="svg-label">宿主设施 / 外部系统</text><text x="716" y="417">Pi SDK 1.5.0 · OpenCode 2.1.4</text><text x="716" y="443">Node child_process · 操作系统</text><text x="716" y="469" class="svg-small">模型服务 / 原生会话存储</text>
+<path d="M 555 285 L 555 301 L 961 301 L 961 350" stroke="#73867c" stroke-width="1.8" fill="none" marker-end="url(#arrow-arch)"/>
+</svg>
+<p class="caption">箭头表示源码依赖 / 设施调用方向。核心通过端口回调适配层实现属于运行时调用，不是反向 import。</p>
+</div>
+<div class="grid3">
+<div class="card"><span class="tag">CompactionPort</span><p class="sub">读取完整回答、准备摘要、发起原生提交、等待提交完成。Pi 的 compact 本身等待完成，因此其 <code>wait()</code> 为空实现。</p></div>
+<div class="card"><span class="tag">TaskSource</span><p class="sub"><code>read / subscribe / cancel</code> 把具体执行转为统一快照。事件用于低延迟，查询用于补偿遗漏。</p></div>
+<div class="card"><span class="tag">WaitPort</span><p class="sub"><code>resume(record, signal)</code> 将已结算等待落实为真实 session 接续，按同一等待 ID 识别已接纳结果。</p></div>
+</div>
+<p class="sub">核心保留已有合理实现；进程执行被提取为共用适配模块。没有为了两层命名而增加通用基类、动态注册器或多层工厂。</p>
+</section>
+
+<section id="entry">
+<h2><span class="section-id">03</span>从 SDK 入口进入代码</h2>
+<div class="flow">
+<div class="step"><span class="num">01 · 创建</span><b>createPiSession()</b><p>建立 runtime 与 scheduler，声明 inline extension 和四个工具。</p></div>
+<div class="step"><span class="num">02 · 绑定</span><b>创建 Pi session</b><p>加载资源并调用 createAgentSession；包裹原生 finishTurn，订阅压缩起止事件。</p></div>
+<div class="step"><span class="num">03 · 运行</span><b>bindExtensions() / prompt()</b><p>嵌入方绑定模式与 UI；原生模型请求和工具执行进入扩展回调。</p></div>
+<div class="step"><span class="num">04 · 退出</span><b>close()</b><p>终止所拥有的子 session 推理，关闭两项核心能力并释放 SDK。</p></div>
+</div>
+<div class="table-wrap"><table class="code-map"><thead><tr><th>文件</th><th>主要符号</th><th>拥有的状态 / 职责</th></tr></thead><tbody>
+<tr><td><code>src/index.ts</code></td><td>核心包导出</td><td>只导出 scheduler、wait 及其类型，通用入口不加载 Harness SDK。</td></tr>
+<tr><td><code>src/scheduler.ts</code></td><td><code>createYunPianGao</code><br><code>takePrepared</code></td><td>每 session 的空闲代次、timer；每次准备的摘要与 committing 资格。</td></tr>
+<tr><td><code>src/wait.ts</code></td><td><code>createWaitRuntime</code></td><td>tasks、waits 两张 Map；任务读状态、等待定时器、投递与取消信号。</td></tr>
+<tr><td><code>src/adapters/pi.ts</code></td><td><code>createPiSession</code></td><td>固定 session ID、输入版本、waitingCalls、parked、starting、children、closing、compactionDone；连接真实 SDK 并拥有生命周期。</td></tr>
+<tr><td><code>src/adapters/process.ts</code></td><td><code>launchProcess</code></td><td>Node 子进程句柄、64 KiB 输出尾部、进程终态与取消请求标记。</td></tr>
+<tr><td><code>src/adapters/opencode*.ts</code></td><td>OpenCode 插件及等待工具</td><td>兼容宿主专用事件、权限、中断与 synthetic 接续；不被 Pi 适配器调用。</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="wait-flow">
+<h2><span class="section-id">04</span>等待的代码流：注册、停放、结算、接续</h2>
+<p>模型调用 <code>wait_for</code> 时，工具会正常返回等待注册记录。真正阻止下一次模型请求的是 Pi 的原生轮边界；计时与任务状态观察留在 runtime 中继续运行。</p>
+<div class="diagram"><table class="sequence" aria-label="任务等待主时序"><thead><tr><th>模型 / Pi 执行循环</th><th>Pi 适配器</th><th>核心 wait runtime</th><th>进程 / 子 session</th></tr></thead><tbody>
+<tr><td><span class="msg pi"><span class="label">① 工具调用 →</span>start_process / start_subagent</span></td><td><span class="msg pi">创建实际执行 → 注册 source</span></td><td><span class="msg">register() → 返回 TaskHandle</span></td><td><span class="msg neutral">开始独立执行</span></td></tr>
+<tr><td><span class="msg pi"><span class="label">② 后续模型步骤 →</span>wait_for(handle, timeout)</span></td><td><span class="msg pi">复核 modelEpoch；秒转毫秒</span></td><td><span class="msg">begin()：建立期限<br>active = false</span></td><td class="hold">继续执行</td></tr>
+<tr><td><span class="msg pi"><span class="label">③ 正常工具结果 ←</span>收到注册记录</span></td><td><span class="msg pi">记录 call → wait ID 与 parked</span></td><td class="hold">结果可提前变为 ready<br>尚不能发送接续</td><td class="hold">可能已完成</td></tr>
+<tr><td><span class="msg pi"><span class="label">④ 原生轮边界</span>同批工具均已完成</span></td><td><span class="msg pi">先调用原生 finishTurn<br>再返回 { action: "end" }</span></td><td class="hold">不发起模型请求</td><td class="hold">继续执行</td></tr>
+<tr><td><span class="msg pi"><span class="label">⑤ 已完全停放 →</span>agent_settled</span></td><td><span class="msg pi">activate(parked)</span></td><td><span class="msg">active = true<br>ready 才能 deliver</span></td><td class="hold">继续执行</td></tr>
+<tr><td class="hold">不推理，不长 sleep</td><td class="hold">source 事件 / 查询</td><td><span class="msg"><span class="label">⑥ 状态或期限到达</span>refresh → observe → settle<br>首个原因固定：waiting → ready</span></td><td><span class="msg neutral">read() 返回 TaskSnapshot<br>subscribe() 通知变化</span></td></tr>
+<tr><td class="hold">等待真实接续输入</td><td><span class="msg pi"><span class="label">⑦ WaitPort.resume</span>等待 compactionDone<br>检查已接纳 ID<br>sendCustomMessage()</span></td><td><span class="msg">deliver 同一 WaitRecord<br>未接纳失败则使用同 ID 重试</span></td><td class="hold">终态被 runtime 保留</td></tr>
+<tr><td><span class="msg pi"><span class="label">⑧ 实际接续 ←</span>进入新推理 / 原生后续队列</span></td><td><span class="msg pi">context 回调重新注入依赖</span></td><td><span class="msg">resume 返回后<br>ready → delivered</span></td><td class="hold">同一 handle 可再次等待</td></tr>
+</tbody></table><p class="caption">异步事件可在任意两步之间到达。核心将“注册等待”和“允许发送接续”分开，覆盖任务在停放前完成的情况。</p></div>
+<div class="grid2">
+<article class="card"><h3>进程任务如何完成</h3><p class="sub"><code>spawn(command, args)</code> 不经过 shell。stdout / stderr 合并保留尾部；<code>close</code> 事件形成 exitCode、signal、output、truncated 结果。正常退出为 succeeded，其他退出为 failed；请求取消后由 SIGTERM 退出才标记 cancelled。</p></article>
+<article class="card"><h3>子 Agent 如何完成</h3><p class="sub">创建独立 Pi session，共享当前 ModelRuntime、模型、thinking level 和目录，禁用扩展。由该次 <code>prompt()</code> 的完成与最终 assistant 消息确定成功、失败或取消，随后 dispose 子 session；不从压缩控制项或 idle 时间推断完成。</p></article>
+</div>
+<div class="callout"><p><strong>两道资格：</strong><code>state = ready</code> 表示等待已结算；<code>active = true</code> 表示宿主已到达可接续边界。两者都满足才可投递。Pi 允许同批其他工具先正常完成，但同一轮只注册一次等待。</p></div>
+</section>
+
+<section id="data">
+<h2><span class="section-id">05</span>数据流：执行、等待记录与聊天内容分开保存</h2>
+<p><code>TaskHandle</code> 标识一次具体执行；<code>WaitRecord</code> 标识一次等待。重新等待保留 handle，创建新的 wait ID 和 deadline。核心的快照返回副本，外部修改不能反向改变 runtime。</p>
+<div class="grid2">
+<div><h3>任务层的数据</h3><pre><code>TaskHandle {
+  id,                  // ypg_…：本次执行的 handle
+  kind,                // process | subagent
+  sessionID,           // owner，用于归属校验
+  executionID          // 进程 UUID:pid 或子 session ID
+}
+
+TaskSnapshot {
+  status,              // working / input_required /
+                       // succeeded / failed / cancelled
+  result?, error?, intervention?, finishedAt?
+}</code></pre></div>
+<div><h3>单次等待的数据</h3><pre><code>WaitRecord {
+  id,                  // ypgw_…：这一次等待的身份
+  sessionID, handle,
+  createdAt, deadline, // 毫秒时间戳
+  state,               // waiting | ready | delivered
+  reason?, resolvedAt?,
+  snapshot?            // 结算时复制的任务状态
+}
+
+Waiting（仅核心内部） {
+  record, active, sending, delivery?, timer?
+}</code></pre></div>
+</div>
+<div class="state-row" aria-label="单次等待的状态转换">
+<span class="state">waiting</span><span class="arrow">settle<br>固定首个结束原因 →</span><span class="state">ready</span><span class="arrow">active + resume 成功<br>或输入 / 中断本地收尾 →</span><span class="state">delivered</span>
+</div>
+<p class="small">delivered 表示该等待的接续已完成本地投递或收尾，不等于新一轮回答必定成功。任务的 succeeded / failed / cancelled 被核心视为不可覆盖终态；input_required 可回到 working。关闭 runtime 后，未结算等待可记录为 ready / closed，但不会再发送接续，不能将它解释为已送达。</p>
+<div class="diagram">
+<svg viewBox="0 0 1000 430" role="img" aria-labelledby="data-title data-desc">
+<title id="data-title">任务状态从 source 进入 runtime，再分为普通上下文、接续结果和应用快照</title><desc id="data-desc">进程输出和子 Agent 结果形成 TaskSnapshot，事件或周期查询刷新 runtime 的 tasks 与 waits。context 只注入依赖元数据；resume 发送含结果的 WaitRecord；snapshot 向嵌入应用返回完整副本。原生聊天由 Pi 持久化，但运行时执行句柄不因此获得重启恢复能力。</desc>
+<defs><marker id="arrow-data" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#73867c"/></marker></defs>
+<rect x="20" y="140" width="215" height="137" rx="11" fill="#eef0fb"/><text x="40" y="169" class="svg-title">TaskSource</text><text x="40" y="197">进程输出 / 子 Agent 结果</text><text x="40" y="225">read() → TaskSnapshot</text><text x="40" y="251" class="svg-small">事件通知 + 等待期间 500 ms 查询</text>
+<path d="M235 208 L304 208" stroke="#73867c" stroke-width="1.8" marker-end="url(#arrow-data)"/><text x="247" y="191" class="svg-small">refresh</text>
+<rect x="310" y="140" width="239" height="137" rx="11" fill="#e8f2ed"/><text x="332" y="169" class="svg-title">进程内 runtime</text><text x="332" y="197">tasks：最新任务快照</text><text x="332" y="225">waits：期限、原因与结算副本</text><text x="332" y="251" class="svg-small">查询失败保留状态，不标记任务失败</text>
+<path d="M549 175 L587 175 L587 63 L635 63 M549 208 L635 208 M549 241 L587 241 L587 349 L635 349" stroke="#73867c" stroke-width="1.8" fill="none" marker-end="url(#arrow-data)"/>
+<rect x="640" y="16" width="340" height="97" rx="10" fill="#eef0fb"/><text x="661" y="43" class="svg-title">① dependencies() → context</text><text x="661" y="70">tasks 元数据 + waits 去掉 snapshot</text><text x="661" y="94" class="svg-small">普通 custom 上下文，不提升为系统指令</text>
+<rect x="640" y="160" width="340" height="97" rx="10" fill="#eef0fb"/><text x="661" y="187" class="svg-title">② resume() → 原生会话</text><text x="661" y="214">完整 WaitRecord JSON（含结果副本）</text><text x="661" y="238" class="svg-small">customType: yunpiangao.resume · details.id</text>
+<rect x="640" y="303" width="340" height="97" rx="10" fill="#f0f3ee"/><text x="661" y="330" class="svg-title">③ snapshot() → 嵌入应用</text><text x="661" y="357">tasks 与 waits 的完整结构化副本</text><text x="661" y="381" class="svg-small">用于展示和复核，不是跨重启恢复文件</text>
+<text x="22" y="335" class="svg-label">存储边界</text><text x="22" y="363">RAM 中保留执行关系；Pi 保留聊天条目。</text><text x="22" y="390" class="svg-small">聊天压缩不删除 RAM；聊天持久化不重建进程或执行句柄。</text>
+</svg>
+</div>
+<div class="table-wrap"><table><thead><tr><th>结束原因</th><th>底层任务</th><th>session 怎样继续</th><th>同一 handle 能否重等</th></tr></thead><tbody>
+<tr><td>succeeded / failed / cancelled</td><td>终态被保留</td><td>runtime 经 WaitPort 发送结果并触发 Pi 接续</td><td>可以，再次取得保留的终态结果</td></tr>
+<tr><td>timeout</td><td>继续执行</td><td>发送本次等待超时结果，模型决定后续动作</td><td>可以，新 wait ID、新期限</td></tr>
+<tr><td>user_input</td><td>继续执行</td><td>由原生用户输入推进，不额外发送一次等待接续</td><td>可以</td></tr>
+<tr><td>interrupted</td><td>继续执行</td><td>停止等待；中断本身不承诺新一轮推理</td><td>可以</td></tr>
+<tr><td>input_required</td><td>非终态，可恢复 working</td><td>核心会发送介入信息；Pi 当前禁用扩展的子 session 未实现此来源</td><td>核心支持，Pi UI 转发未实现</td></tr>
+</tbody></table></div>
+<p class="sub">已从 waiting 结算为 ready 并开始投递的结果，不被迟到输入或期限改写；并发输入按 Pi 队列处理。任务事件重复时，settle 只接受仍处于 waiting 的记录。事件遗漏时，runtime 在等待期间复核 source；Pi 的 source 位于同一进程，不需要 OpenCode 的远端事件流重连。</p>
+</section>
+
+<section id="compaction">
+<h2><span class="section-id">06</span>压缩的代码流：在宿主边界消费摘要</h2>
+<p>空闲并不直接等于允许压缩。Pi 先确认 session 空闲，且最后相关原生条目为 <code>stopReason = stop</code> 的 assistant 回答；核心再检查用量阈值。等待工具之后的 toolResult 不满足这项完整回答筛选。阈值使用最近完整回答的 input + output + cacheRead + cacheWrite 之和，不是会话累计计费。</p>
+<div class="flow">
+<div class="step"><span class="num">01 · 调度</span><b>agent_settled → engine</b><p>非 aborted 事件报告 succeeded；延迟默认 1,500 ms，再筛选完整回答与 100,000 token 阈值。</p></div>
+<div class="step"><span class="num">02 · 准备</span><b>prepare() → 摘要模型</b><p>读取原生当前投影，调用 Pi generateSummaryWithUsage，经当前 ModelRuntime 发送，不创建用户输入。</p></div>
+<div class="step"><span class="num">03 · 再确认</span><b>仍在同一空闲代次？</b><p>核心检查 idle / epoch 与非空摘要；Pi 再检查 isIdle 和 pendingMessageCount。</p></div>
+<div class="step"><span class="num">04 · 提交</span><b>session.compact() → hook</b><p>在 session_before_compact 重算指纹并 takePrepared；原生 Pi 持久化摘要并刷新上下文。</p></div>
+</div>
+<div class="grid2">
+<article class="card"><span class="tag">PreparedSummary</span><pre><code>{
+  text: "生成的临时文本摘要",
+  fingerprint: SHA256(JSON.stringify([
+    epoch,
+    session.model,
+    session.systemPrompt,
+    session.sessionManager.getBranch(),
+    dependencies()
+  ]))
+}</code></pre><p class="small">这是当前 Pi 适配器的实际指纹输入。dependencies 包含等待元数据，因此期限、结束原因或依赖状态变化也可能使摘要失效。</p></article>
+<article class="card"><span class="tag pi">原生提交回调</span><h3>takePrepared 的三种结果</h3><ul class="sub"><li><strong>返回文本：</strong>提交已有摘要，使用原生 preparation 的 firstKeptEntryId 与 tokensBefore。</li><li><strong>返回 undefined：</strong>没有可消费的预备结果，保留宿主原生压缩流程。</li><li><strong>抛出 StaleSummaryError：</strong>适配器返回 <code>{ cancel: true }</code>，取消这次压缩；不以原生重新生成掩盖过期摘要。</li></ul><p class="small">不能只把异常抛给 Pi：宿主扩展 runner 会捕获 hook 异常，需要明确返回取消。</p></article>
+</div>
+<div class="two-epochs">
+<article class="card"><h3>核心 scheduler 的 epoch</h3><p class="sub">每次输入或执行阶段变化推进。延迟任务保存其代次，准备返回后必须仍是同一空闲轮。它表达摘要的调度资格。</p><p class="small"><code>src/scheduler.ts · State.epoch / current()</code></p></article>
+<article class="card"><h3>Pi 适配器的 epoch / modelEpoch</h3><p class="sub">输入及模型选择推进 epoch；context 回调记录 modelEpoch。旧请求中的 wait_for 若遇版本不一致，直接返回 user_input，不注册过期等待；epoch 也进入摘要指纹。</p><p class="small"><code>src/adapters/pi.ts · input / context / model_select</code></p></article>
+</div>
+<div class="callout limit"><p><strong>提交范围：</strong>摘要覆盖当前完整投影，原生选择的尾部继续保留，可能与摘要重复。临时摘要的 usage 未写入主 session 统计。Pi 入口只支持 prepare-then-commit；模型生成预算与格式使用 Pi 原生实现。这里不提供覆盖所有外部扩展副作用的通用事务或 CAS。</p></div>
+</section>
+
+<section id="cooperation">
+<h2><span class="section-id">07</span>等待与压缩怎样配合</h2>
+<p>等待依赖不以摘要文本为唯一来源。任务与等待留在 runtime 的 Map 中；压缩只改变 Pi 的聊天投影。下一次 context 回调从内存重新取得依赖，所以摘要遗漏 handle 文本不会消除现存的运行关系。</p>
+<div class="diagram"><table class="sequence" aria-label="任务在压缩期间完成的时序"><thead><tr><th>父 session</th><th>原生 compact</th><th>wait runtime</th><th>任务源</th></tr></thead><tbody>
+<tr><td><span class="msg pi">已完成停放</span></td><td><span class="msg pi">compaction_start<br>建立未完成的 compactionDone</span></td><td class="hold">waiting，active = true</td><td class="hold">working</td></tr>
+<tr><td class="hold">尚不请求模型</td><td><span class="msg pi">读取 / 生成摘要中</span></td><td><span class="msg">settle → ready<br>resume 等待 compactionDone</span></td><td><span class="msg neutral">完成，通知 source 变化</span></td></tr>
+<tr><td class="hold">尚不请求模型</td><td><span class="msg pi">提交或结束压缩<br>compaction_end 释放 Promise</span></td><td><span class="msg">解除发送屏障</span></td><td class="hold">终态仍保留</td></tr>
+<tr><td><span class="msg pi">custom message 接续<br>context 重新注入依赖</span></td><td class="hold">本次压缩已结束</td><td><span class="msg">同一等待 ID 接纳<br>最终记录 delivered</span></td><td class="hold">无需重新启动任务</td></tr>
+</tbody></table><p class="caption">同一屏障在原生压缩结束时释放；任务结算资格与发送时机是两件事。关闭时的取消信号可打断本地屏障等待。</p></div>
+<div class="grid2"><article class="card"><h3>摘要准备期间的新输入</h3><p class="sub">正常进入 Pi，推进输入版本并使核心空闲代次失效。模型摘要请求可能继续计算，但返回的旧结果不被提交。</p></article><article class="card"><h3>原生 compact 期间的新输入</h3><p class="sub">Pi 1.5.0 拒绝新 prompt。嵌入方应保留被拒绝的文本，待压缩结束后再提交。适配器没有添加输入缓存或自动重试队列。</p></article></div>
+</section>
+
+<section id="walkthrough">
+<h2><span class="section-id">08</span>逐步看一次状态变化</h2>
+<p class="sub">下方是按源码契约编写的时序讲解，不运行 Agent，也不模拟真实定时器竞争。选择场景和步骤，可对照触发者、函数及结构化状态；示例标识均为演示值。面板是讲解视图，不等同于 snapshot() 的原始返回；active 属于内部 Waiting。</p>
+<div class="explorer" id="scenario-explorer">
+<div class="explorer-head"><label for="scenario-select">场景</label><select id="scenario-select"><option value="success">任务完成 → 一次接续</option><option value="early">停放之前已完成</option><option value="timeout">超时 → 同一 handle 再次等待</option><option value="input">用户输入 → 结束本次等待</option><option value="cancel">cancel_task → 独立取消执行</option><option value="compact">压缩期间完成 → 延后发送</option><option value="stale">新输入 → 丢弃准备中的摘要</option></select></div>
+<div class="explorer-body"><div><ol id="walk-steps"></ol><div class="controls"><button type="button" id="walk-prev">上一步</button><span class="small" id="walk-progress"></span><button type="button" id="walk-next">下一步</button></div></div><div aria-live="polite" aria-atomic="true"><div class="walk-meta" id="walk-meta"></div><h3 id="walk-title" style="margin-top:0"></h3><p class="walk-note" id="walk-note"></p><div class="walk-source" id="walk-source"></div><pre id="walk-state"></pre></div></div>
+<noscript><p class="no-script">当前未启用 JavaScript。主时序、状态表和数据流图均可直接阅读；逐步讲解需启用脚本。</p></noscript>
+</div>
+</section>
+
+<section id="lifecycle">
+<h2><span class="section-id">09</span>集成与生命周期：关闭、失效与资源归属</h2>
+<div class="table-wrap"><table><thead><tr><th>操作</th><th>本次等待</th><th>独立进程</th><th>子 Agent</th><th>接续行为</th></tr></thead><tbody>
+<tr><td>timeout / 新输入</td><td>结算当前等待</td><td>继续执行</td><td>继续执行</td><td>timeout 由 runtime 接续；新输入由 Pi 接续。</td></tr>
+<tr><td><code>ypg.interrupt()</code></td><td>记录 interrupted</td><td>继续执行</td><td>独立子 session 继续</td><td>同时 abort 父 session；停止该次等待的后续投递资格，已就绪结果遵循先结算规则。</td></tr>
+<tr><td><code>cancel_task(handle)</code></td><td>仍按 source 终态复核</td><td>向该进程组发送 SIGTERM</td><td>对目标 child 调用 abort</td><td>请求回执不是终态证明；等待在观察到结果后接续。</td></tr>
+<tr><td><code>ypg.close()</code></td><td>关闭 runtime，停止定时器与本地投递</td><td>继续，输出被消费到退出</td><td>abort 父 session 与 children，等待在途创建及子结果收尾，再 dispose</td><td>runtime.close 生效后不再发起投递；已接纳输入不能被撤回。</td></tr>
+</tbody></table></div>
+<pre><code>import { createPiSession } from "@ziyuew1116/yunpiangao/pi"
+
+const ypg = await createPiSession({ cwd: process.cwd() }, {
+  thresholdTokens: 100000,
+  idleDelayMs: 1500,
+})
+await ypg.session.bindExtensions({ mode: "json" })
+await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。")
+
+// prompt 返回可表示已停放；嵌入应用应继续维持 session 生命周期。
+// 后续用户输入：await ypg.session.prompt(text)
+// 读取结构化状态：ypg.snapshot()
+// 用户明确停止等待：await ypg.interrupt()
+// 应用退出时：await ypg.close()</code></pre>
+<h3>关闭的代码流</h3>
+<div class="flow">
+<div class="step"><span class="num">01 · 撤销资格</span><b>closed = true</b><p>先公布共享关闭 Promise，同步标记关闭并调用 engine.close / runtime.close。新工具与 interrupt 拒绝操作，后续回调不再调度或投递。</p></div>
+<div class="step"><span class="num">02 · 停止推理</span><b>abort 父与子 session</b><p>与核心清理并行启动。尚未结算的等待记录 closed；已确定的原因保留。独立进程继续执行。</p></div>
+<div class="step"><span class="num">03 · 等待收尾</span><b>starting + children</b><p>等待在途创建返回；迟到对象复核失效后释放，不启动 prompt。等待已运行子 prompt 的结果处理与 dispose 完成。</p></div>
+<div class="step"><span class="num">04 · 完成释放</span><b>同一个 closing Promise</b><p>清理子资源、轮边界状态并 dispose 父 session。并发调用与 abort 监听器的同步重入，都等待这次完整清理，SDK 资源只释放一次。</p></div>
+</div>
+<p class="sub">入口拥有 DefaultResourceLoader，不接收自定义 resourceLoader；其余原生创建选项可传入。资源加载、SDK 创建或回调安装失败时，父入口关闭已经拥有的资源并传播错误。子创建在每个异步边界检查 closed 与工具 AbortSignal；创建或绑定失败时清理已返回的 child，再向工具调用方传播错误，不发布 handle。</p>
+<div class="table-wrap"><table style="min-width:680px"><thead><tr><th>适配层状态</th><th>保存什么</th><th>关闭时如何消费</th></tr></thead><tbody>
+<tr><td><code>starting</code></td><td>从加载资源到发布 handle 的创建 Promise。</td><td>close 等待这些调用返回；它们在边界处拒绝迟到启动，并释放已创建对象。</td></tr>
+<tr><td><code>children</code></td><td>已拥有的子 session → prompt 收尾 Promise；创建中尚无 prompt 时为 undefined。</td><td>abort 已创建对象；等待结果收尾，避免重复 dispose 或关闭后仍处理子结果。</td></tr>
+<tr><td><code>sessionID</code></td><td>适配实例创建时的固定归属。</td><td>内存 fork 即使复用并改写 SessionManager，旧快照仍查询原 session 的状态。</td></tr>
+<tr><td><code>closed / closing</code></td><td>入口操作资格与同一次完整清理结果。</td><td>关闭立即生效；先公布 Promise，再触发 abort；重复或同步重入调用等待同一结果，不提前返回或重复清理。</td></tr>
+</tbody></table></div>
+<h3>shutdown、fork 与 reload 的失效边界</h3>
+<p class="sub">原生 session_shutdown 关闭当前适配实例。文件与内存 fork 的新实例拥有空 runtime，不接管旧 handle。reload 会重新调用原 inline extension 工厂；closed 工厂不注册工具或事件，也不重新连接已释放的原生 session。新生命周期须重新调用 createPiSession。保留的旧工具及 interrupt 抛出关闭错误；snapshot 仍可读取关闭时的状态，其中 working 不代表外部任务已结束。已释放的原生 session 不能继续使用。</p>
+<p class="small">Pi 的加载、创建与绑定接口没有这里可用的统一取消参数；close 等待在途调用返回后清理，不保证固定完成时限。已经被宿主接纳的输入不能撤回。直接调用空闲状态的原生 session.abort() 可能没有执行事件，停止停放等待应使用 ypg.interrupt()。</p>
+<div class="grid2"><article class="card"><h3>进程生命周期</h3><p class="sub">不接受交互式 stdin；环境与目录来自宿主。POSIX 取消进程组；Windows 分支只取消直接进程，未做真实平台验收。忽略 SIGTERM 的进程可能继续运行，不自动强杀。</p></article><article class="card"><h3>数据生命周期</h3><p class="sub">TaskSource、结果、期限与恢复原因在进程内。原生聊天持久化可能保存工具与接续记录，但适配器不会据此重建执行句柄。没有跨重启恢复承诺。</p></article></div>
+</section>
+
+<section id="evidence">
+<h2><span class="section-id">10</span>已验证的内容与能力缺口</h2>
+<div class="grid3"><div class="card metric"><strong>112</strong><span>完整测试通过 · 含 Pi 场景</span></div><div class="card metric"><strong>41</strong><span>20 个执行循环 + 21 个生命周期场景</span></div><div class="card metric"><strong>1–10 ms</strong><span>本地完成到接续请求的观测区间</span></div></div>
+<p class="sub">实现基线的验收记录，日期 2026-11-03；macOS arm64、Node.js 26.3.1、Pi 1.5.0。20 个执行循环场景使用真实 SDK 与本机模型替身，回复和工具选择预设。另有 21 个生命周期场景通过真实入口与原生对象，在加载、创建回执、绑定和订阅边界注入故障及门闩；其中部分场景不经过模型轮次。观察到额外父模型唤醒 0、长 sleep 调用 0；毫秒观测不是生产性能保证。</p>
+<div class="table-wrap"><table><thead><tr><th>性质</th><th>证据范围</th><th>不能据此推断</th></tr></thead><tbody>
+<tr><td>Pi 实际停放与接续</td><td>进程 / 子 Agent 完成、失败、输入、取消、超时重等；提前完成、回执丢失、同批工具及模型流中输入。</td><td>真实模型会自主选择 wait_for；其他 SDK 版本行为相同。</td></tr>
+<tr><td>压缩与等待配合</td><td>进程和子 Agent 等待期间 compact；任务在压缩请求阻塞期间完成；后续模型收到 runtime 依赖。</td><td>所有外部扩展修改都受通用原子事务保护。</td></tr>
+<tr><td>预备摘要的有效性</td><td>空闲准备与复用、新输入失效、提交前系统提示变化时取消；没有额外原生摘要 fallback。</td><td>真实模型的摘要质量、信息保真度或成本收益。</td></tr>
+<tr><td>Pi 生命周期竞争</td><td>父 / 子创建失败；加载与绑定中 close；迟到创建回执；工具取消；并发 close；运行中子推理只释放一次；独立进程继续；compact 屏障中的投递关闭；原生 shutdown、文件 / 内存 fork 和 reload 失效；abort 同步重入时同一 Promise 与一次 SDK 资源清理。</td><td>任意第三方扩展都可被强制终止；资源加载或绑定永不返回时仍保证关闭期限。</td></tr>
+<tr><td>核心竞争与补偿</td><td>重复通知、完成 / 超时竞争、断线查询恢复、介入解除、handle 归属、卸载与同 ID 重试。</td><td>Pi 禁用扩展的子 session 已接通 input_required 来源。</td></tr>
+<tr><td>OpenCode 兼容</td><td>此前通过 6 个压缩 + 32 个等待真实入口场景；本次保留适配单测，未重跑这些真实入口。</td><td>OpenCode 结果可以代替 Pi 验收。</td></tr>
+</tbody></table></div>
+<p class="small">创建故障注入位于 SessionManager.buildSessionContext，早于 AgentSession 分配；已返回对象的失败清理由绑定和订阅故障覆盖。SDK 内部“分配后、返回前”的任意异常资源释放未验证。同步重入测试使用正式 agent.subscribe 的 AbortSignal 与公开 registerSessionResourceCleanup，直接统计 SDK 资源清理次数。</p>
+<h3>当前必须按边界集成</h3>
+<div class="grid2"><article class="card"><span class="tag limit">SDK 与 CLI</span><p class="sub">SDK 公开 finishTurn 的 end 决策；普通扩展 turn_end 只可要求继续，tool hook 的 terminate 用于阻止工具。适配器采用 SDK 正常轮边界，尚无独立 CLI 扩展入口。</p></article><article class="card"><span class="tag limit">子 Agent 交互</span><p class="sub">Pi 没有 OpenCode 的 Agent 清单与权限审批协议。本实现的子 session 禁用扩展，不模拟 permission / question / form，未转发扩展 UI 介入。input_required 保留在核心契约。</p></article></div>
+<h3>验收入口与隔离</h3>
+<pre><code>npm run check
+npm test                      # 全部 112 项（包含 Pi 场景）
+npm run test:pi               # 单独运行 Pi 的 41 项
+npm run audit:public
+npm pack --dry-run
+# OpenCode 兼容真实入口：
+OPENCODE_BIN=/absolute/path/to/opencode npm run test:runtime</code></pre>
+<p class="sub">Pi 测试使用临时 cwd、显式 agentDir、文件或内存 SessionManager，以及独立 authPath、modelsPath、modelsStorePath。另设置 PI_CODING_AGENT_DIR、PI_CODING_AGENT_SESSION_DIR、PI_OFFLINE，覆盖宿主全局路径；不假定遵循 XDG。没有使用现有 DSW 服务、聊天或真实模型凭证。</p>
+</section>
+
+<section id="source">
+<h2><span class="section-id">11</span>源码索引与关键调用</h2>
+<p class="sub">下方片段按实现基线节选、压缩展示，保留关键调用与条件。行号只对该版本有效；完整语义以拥有状态的源码为准。</p>
+<div class="read-code">
+<details><summary>等待何时才允许发送？<br><span class="small">src/wait.ts · deliver / settle · L68–94</span></summary><pre><code>const deliver = (wait: Waiting) =&gt; {
+  if (closed || !wait.active || wait.sending ||
+      wait.record.state !== "ready") return
+  // user_input / interrupted 只在本地收尾。
+  // 其余原因调用 port.resume；失败保留同 ID 重试。
+}
+const settle = (wait: Waiting, reason: ResumeReason,
+                snapshot?: TaskSnapshot) =&gt; {
+  if (wait.record.state !== "waiting") return
+  // 清理 timer，固定 reason 和 snapshot，再尝试 deliver。
+}</code></pre><p class="small">片段压缩展示；省略体的说明为中文注释。终态覆盖限制、复制与信号处理在原文件中实现。</p></details>
+<details><summary>Pi 如何正常停放？<br><span class="small">src/adapters/pi.ts · finishTurn · L203–217</span></summary><pre><code>const decision = (await nativeFinish?.(turn, signal)) || undefined
+if (closed) return decision
+const call = turn.toolResults.find(
+  (item) =&gt; waitingCalls.has(item.toolCallId))
+if (!call) return decision
+const waitID = waitingCalls.get(call.toolCallId)!
+waitingCalls.delete(call.toolCallId)
+const wait = runtime.snapshot(id()).waits.find(
+  (item) =&gt; item.id === waitID)
+if (wait?.reason === "user_input") {
+  runtime.activate(waitID)
+  if (parked === waitID) parked = undefined
+  return decision
+}
+return { action: "end" }</code></pre></details>
+<details><summary>哪些状态进入模型上下文？<br><span class="small">src/adapters/pi.ts · dependencies · L35–41</span></summary><pre><code>const state = runtime.snapshot(id())
+return {
+  tasks: state.tasks.map(
+    ({ handle, status, finishedAt }) =&gt;
+    ({ handle, status, finishedAt })),
+  waits: state.waits.map(
+    ({ snapshot: _snapshot, ...record }) =&gt; record),
+}</code></pre><p class="small">完整 result / error / intervention 在 runtime 快照与接续结果中；周期性依赖注入不重复附带原始输出。</p></details>
+<details><summary>谁拒绝过期摘要？<br><span class="small">src/scheduler.ts L120–125；pi.ts L185–193</span></summary><pre><code>// 核心：消费一次提交资格，再复核指纹。
+const job = jobs.get(sessionID)
+if (!job?.committing) return undefined
+job.committing = false
+if (!job.prepared ||
+    job.prepared.fingerprint !== fingerprint)
+  throw new StaleSummaryError()
+return job.prepared.text
+
+// Pi：在 session_before_compact 中捕获并返回取消。
+// catch { return { cancel: true } }</code></pre></details>
+</div>
+<h3>仓库内的证据位置</h3>
+<ul class="source-list">
+<li><code>src/scheduler.ts:45</code> — 调度器、代次、准备与提交资格。</li><li><code>src/wait.ts:46</code> — 状态机、查询、结算与投递。</li><li><code>src/adapters/pi.ts:17</code> — Pi 入口、工具与原生回调。</li><li><code>src/adapters/process.ts:6</code> — 共享进程源。</li><li><code>test/pi-runtime.test.mjs</code> — Pi 真实 SDK 场景。</li><li><code>test/wait.test.mjs</code>、<code>test/scheduler.test.mjs</code> — 核心竞争与生命周期。</li><li><code>test/runtime.py</code>、<code>test/runtime_wait.py</code> — OpenCode 真实入口。</li><li><code>docs/adapters.md</code>、<code>docs/validation.md</code> — 接口契约与测量范围。</li>
+</ul>
+<h3>固定版本的宿主源码</h3>
+<p class="small">以下链接仅用于查阅。断网不影响本文件正文、图示或逐步讲解。</p>
+<ul class="source-list"><li><a href="https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/sdk.ts">Pi SDK 创建与配置入口 · v1.5.0</a></li><li><a href="https://github.com/earendil-works/pi/blob/v1.5.0/packages/agent/src/agent-loop.ts">Pi Agent 循环与 finishTurn · v1.5.0</a></li><li><a href="https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/agent-session.ts">Pi session 接续、压缩及输入边界 · v1.5.0</a></li><li><a href="https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/src/core/extensions/types.ts">Pi 扩展类型与回调契约 · v1.5.0</a></li></ul>
+</section>
+<footer class="baseline">实现基线：<span class="mono">102c8d274d8e486b7e1587f883c3c2b38038a97d</span><br>文档日期：2026-11-03 · 所有图示、样式和交互均内嵌；无外部运行依赖。<span class="footmark">云片糕 · YunPianGao</span></footer>
+</main></div>
+<script>
+(()=>{
+'use strict';
+const make=(title,actor,source,note,state)=>({title,actor,source,note,state});
+const h='ypg_demo_execution';
+const task=(status)=>({handle:{id:h,kind:'process',sessionID:'demo_parent',executionID:'demo_uuid:1234'},status});
+const wait=(id,state,reason,active,extra={})=>({id,handle:h,state,...(reason?{reason}:{}),active,...extra});
+const S={
+success:[
+make('启动并注册执行','Pi 适配器','pi.ts start_process → process.ts launchProcess → wait.ts register','真实进程立即开始。runtime 保存 TaskSource，并返回具体执行的 handle。',{task:task('working'),wait:null}),
+make('注册一次等待','核心 runtime','wait.ts begin','保存绝对 deadline。active 尚未开启；模型先得到工具成功返回的注册记录。',{task:task('working'),wait:wait('ypgw_demo_1','waiting',null,false,{deadline:'创建时刻 + 600000 ms'})}),
+make('原生停放后激活','Pi 适配器','pi.ts finishTurn → agent_settled → activate','finishTurn 返回 end，同批其他工具先正常完成；宿主完全停放后再激活发送资格。',{task:task('working'),wait:wait('ypgw_demo_1','waiting',null,true)}),
+make('观察到成功并结算','核心 runtime','source.subscribe → refresh → observe → settle','首个原因固定为 succeeded。若此时没有压缩屏障，进入 WaitPort.resume。',{task:task('succeeded'),wait:wait('ypgw_demo_1','ready','succeeded',true),resume:{id:'ypgw_demo_1',snapshot:{status:'succeeded',result:{exitCode:0,output:'演示结果'}}}}),
+make('同一 ID 接纳并接续','Pi 适配器','pi.ts resume → sendCustomMessage；wait.ts deliver','消息 details.id 使用等待 ID；正常返回或确认已有条目后不重复投递。后续请求重新注入依赖。',{task:task('succeeded'),wait:wait('ypgw_demo_1','delivered','succeeded',true),message:{customType:'yunpiangao.resume',details:{id:'ypgw_demo_1'}}})],
+early:[
+make('任务在注册等待前已结束','任务源','process.ts close → wait.ts observe','任务终态进入 tasks；尚未创建任何 WaitRecord。',{task:task('succeeded'),wait:null}),
+make('begin 立即取得终态','核心 runtime','wait.ts begin → settle','建立新的等待 ID，结算为 ready，但 active=false，不在旧执行轮里提前发送。',{task:task('succeeded'),wait:wait('ypgw_demo_1','ready','succeeded',false)}),
+make('停放后发送暂存结果','Pi 适配器','finishTurn → agent_settled → activate → resume','激活时发现已经 ready，立即执行一次真实接续，无需新的任务通知。',{task:task('succeeded'),wait:wait('ypgw_demo_1','delivered','succeeded',true)})],
+timeout:[
+make('等待任务，期限即将到达','核心 runtime','wait.ts begin → tick','这是第一次等待；任务仍在运行。',{task:task('working'),wait:wait('ypgw_demo_1','waiting',null,true)}),
+make('只结算本次超时','核心 runtime','tick → settle(timeout) → resume','timeout 不调用 TaskSource.cancel。session 收到超时结果，但 handle 仍对应原来的执行。',{task:task('working'),wait:wait('ypgw_demo_1','delivered','timeout',true)}),
+make('对同一 handle 建立新等待','模型 / Pi 工具','pi.ts wait_for → wait.ts begin','新的 WaitRecord 使用新的 ID 与 deadline；不会重新启动任务。',{task:task('working'),waits:[wait('ypgw_demo_1','delivered','timeout',true),wait('ypgw_demo_2','waiting',null,true)]}),
+make('最终完成，第二次等待接续','核心 runtime','observe → settle(succeeded) → resume','第一条记录保持 timeout；第二条记录得到成功。两个结果属于不同等待。',{task:task('succeeded'),waits:[wait('ypgw_demo_1','delivered','timeout',true),wait('ypgw_demo_2','delivered','succeeded',true)]})],
+input:[
+make('session 已停放','Pi 适配器','agent_settled → activate','等待活动中，底层任务独立运行。',{task:task('working'),wait:wait('ypgw_demo_1','waiting',null,true)}),
+make('用户输入进入宿主','Pi input 回调','pi.ts input → runtime.onInput','推进输入版本，也使准备中的摘要失效。当前等待结算为 user_input，不调用 source.cancel。',{task:task('working'),wait:wait('ypgw_demo_1','delivered','user_input',true),additionalResume:false}),
+make('由用户消息接续推理','Pi 执行循环','session.prompt → context','当前输入优先由 Pi 处理。任务后来完成不会唤醒已结束的这次等待；若再需要结果，重新 wait_for。',{task:task('working'),nextRequest:{trigger:'用户输入',dependencies:'同一 handle + 已结束的等待'}})],
+cancel:[
+make('先保留任务 handle','核心 runtime','wait.ts register','取消的对象是具体执行，调用者须是该 handle 的 owner。',{task:task('working')}),
+make('独立调用 cancel_task','Pi 适配器','pi.ts cancel_task → runtime.cancel → source.cancel','进程发送 SIGTERM；子 Agent 调用 child.abort。工具返回 cancellationRequested，只确认请求，不证明终态。',{task:task('working'),receipt:{handle:h,cancellationRequested:true}}),
+make('按实际退出形成终态','任务源','process.ts close → refresh / observe','示例是请求取消后由 SIGTERM 退出，所以状态为 cancelled。若进程忽略信号则可能继续 working；正常退出按真实结果记录。',{task:task('cancelled'),result:{exitCode:null,signal:'SIGTERM'}}),
+make('等待者收到取消结果','核心 runtime','settle(cancelled) → WaitPort.resume','如果存在活动等待，结果触发 session 接续；没有等待者则只保留任务终态。',{task:task('cancelled'),wait:wait('ypgw_demo_2','delivered','cancelled',true)})],
+compact:[
+make('等待中开始原生压缩','Pi 原生事件','compaction_start','runtime 数据继续保留；适配器建立压缩完成屏障。',{task:task('working'),wait:wait('ypgw_demo_1','waiting',null,true),compactionDone:'pending'}),
+make('任务在压缩请求期间完成','核心 runtime','observe → settle → resume','等待变为 ready；resume 停在 compactionDone，尚未发送消息或唤醒模型。',{task:task('succeeded'),wait:wait('ypgw_demo_1','ready','succeeded',true),compactionDone:'pending',sent:false}),
+make('压缩结束释放屏障','Pi 原生事件','compaction_end','不论原生压缩如何结束，起止事件控制屏障释放；已就绪结果继续使用原等待 ID。',{task:task('succeeded'),wait:wait('ypgw_demo_1','ready','succeeded',true),compactionDone:'resolved'}),
+make('发送结果并补回依赖','Pi 适配器','resume → sendCustomMessage → context','聊天投影可能变短，但 runtime 中的期限、原因、执行关系仍在，重新注入到后续请求。',{task:task('succeeded'),wait:wait('ypgw_demo_1','delivered','succeeded',true),context:{customType:'yunpiangao.dependencies',containsRawOutput:false}})],
+stale:[
+make('同一空闲轮开始准备','scheduler + Pi','compactIfIdle → prepare','记录核心空闲代次和包含 Pi 输入版本的指纹，摘要生成不占用主执行循环。',{scheduler:{epoch:4,idle:true},adapter:{epoch:2},prepared:'pending'}),
+make('新输入进入主 session','Pi input 回调','engine.onInput + runtime.onInput','核心推进代次并离开 idle；适配器输入 epoch 也推进。已发出的摘要请求未必停止计费。',{scheduler:{epoch:5,idle:false},adapter:{epoch:3},prepared:'仍可能生成中'}),
+make('旧摘要返回后被丢弃','核心 scheduler','prepare 返回 → current(sessionID, oldEpoch)','代次已改变，不调用 compact。若变化发生在准备后、提交前，则由 takePrepared 指纹复核取消该次提交。',{scheduler:{epoch:5,idle:false},prepared:'discarded',nativeCommit:false})]
+};
+let scenario='success', index=0;
+const byId=(id)=>document.getElementById(id);
+function render(){
+ const steps=S[scenario], current=steps[index];
+ const list=byId('walk-steps');list.replaceChildren();
+ steps.forEach((step,i)=>{const li=document.createElement('li'), b=document.createElement('button'), n=document.createElement('span'), text=document.createElement('div');b.type='button';b.className='walk-step';if(i===index)b.setAttribute('aria-current','step');n.textContent=String(i+1).padStart(2,'0');text.textContent=step.title;b.append(n,text);b.addEventListener('click',()=>{index=i;render()});li.append(b);list.append(li)});
+ byId('walk-title').textContent=current.title;byId('walk-note').textContent=current.note;byId('walk-source').textContent=current.source;byId('walk-state').textContent=JSON.stringify(current.state,null,2);
+ const meta=byId('walk-meta');meta.replaceChildren();const tag=document.createElement('span');tag.className='tag';tag.textContent=current.actor;meta.append(tag);
+ byId('walk-prev').disabled=index===0;byId('walk-next').disabled=index===steps.length-1;byId('walk-progress').textContent=`${index+1} / ${steps.length}`;
+}
+byId('scenario-select').addEventListener('change',(e)=>{scenario=e.target.value;index=0;render()});
+byId('walk-prev').addEventListener('click',()=>{if(index>0){index--;render()}});byId('walk-next').addEventListener('click',()=>{if(index<S[scenario].length-1){index++;render()}});
+byId('print-btn').addEventListener('click',()=>window.print());
+let closedBeforePrint=[];
+window.addEventListener('beforeprint',()=>{
+ closedBeforePrint=[...document.querySelectorAll('.read-code details:not([open])')];
+ for(const details of closedBeforePrint)details.open=true;
+});
+window.addEventListener('afterprint',()=>{
+ for(const details of closedBeforePrint)details.open=false;
+ closedBeforePrint=[];
+});
+if('IntersectionObserver' in window){const links=[...document.querySelectorAll('.nav a')];const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){for(const link of links){const active=link.hash===`#${entry.target.id}`;link.classList.toggle('active',active);if(active)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}}},{rootMargin:'-10% 0px -60% 0px'});for(const section of document.querySelectorAll('main section'))observer.observe(section)}
+render();
+})();
+</script>
+</body>
+</html>

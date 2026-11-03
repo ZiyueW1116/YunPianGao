@@ -43,6 +43,8 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 适配层依赖核心层。核心不导入 Harness SDK、不按 Harness 名称分支、不读写聊天库。`CompactionPort`、`TaskSource` 和 `WaitPort` 对应真实调用边界；没有通用 Harness 基类、注册平台或能力矩阵。接口与生命周期见[适配契约](docs/adapters.md)。
 
+实现范围、代码流、数据流和生命周期图见[设计说明（自包含 HTML）](docs/design.html)。下载后可离线阅读和打印。
+
 ## 空闲压缩
 
 完整回答后，等待 `idleDelayMs`（默认 1,500 毫秒）。最近完整回答的 input、output、cache read 和 cache write 用量之和达到 `thresholdTokens`（默认 100,000）时，在主执行循环外使用 Pi 原生摘要函数生成临时结果。阈值应低于模型的原生硬压缩阈值，并为最后一轮增长留出余量。
