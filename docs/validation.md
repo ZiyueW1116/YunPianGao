@@ -27,7 +27,7 @@
 
 隔离方式按 1.5.0 的 SDK 与 config 源码核实：每例使用临时 cwd、显式 `agentDir` 和 SessionManager；文件会话使用 `SessionManager.create(cwd, sessionDir)`，内存 fork 与部分恢复检查使用 `SessionManager.inMemory(cwd)`。ModelRuntime 显式指定临时 `authPath`、`modelsPath` 与 `modelsStorePath`，禁用初始模型刷新。测试进程还设置 `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 与 `PI_OFFLINE`，隔离主题、辅助二进制和默认会话路径；不假设遵循 XDG。无扩展包配置、无现有用户配置、无外部服务请求，任务状态在内存中。清理前等待独立进程实际退出，再删除临时目录。上海 DSW 服务、配置和会话库不参与测试。
 
-2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。完整执行循环场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；单独 Pi 运行观测为 2–9 毫秒，不是性能保证。
+2026-11-03 在 macOS arm64、Node.js 26.3.1 上运行上述场景：普通任务父 session 为 3 次模型请求；超时后重等为 4 次；输入后重等或输入后取消再等待为 5 次；显式 interrupt 后停在 2 次。子 Agent 场景另有 1 次子模型请求。完整执行循环场景断言接续条目数量与等待 ID，额外父模型唤醒及长 `sleep` 调用均为 0。测试从实际原生会话工具参数统计长 `sleep`（时长至少 60 秒），从 TaskSnapshot.finishedAt 到接续 provider 请求统计延迟；本次单独 Pi 运行观测为 1–7 毫秒，不是性能保证。
 
 验收命令 `npm run check`、`npm test`（111 项）、`npm run test:pi`（40 项）、`npm run audit:public` 与 npm 归档内容检查均通过。OpenCode 兼容入口的 6 个压缩和 32 个等待真实场景沿用此前验收记录，生命周期修订未重跑；这些结果不代替 Pi 验收。
 
