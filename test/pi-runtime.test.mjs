@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { AgentSession, AgentSessionRuntime, DefaultResourceLoader, ModelRuntime, SettingsManager, SessionManager } from "@earendil-works/pi-coding-agent"
+import { registerSessionResourceCleanup } from "@earendil-works/pi-ai"
 import { createPiSession } from "../dist/adapters/pi.js"
 
 // Pi 的主题与辅助二进制路径使用全局函数；SDK 的 agentDir 不覆盖这些路径。
@@ -41,7 +42,7 @@ async function fixture(name, scheduling = { thresholdTokens: 999999 }, inMemory 
     if (n === 1) {
       if (name.startsWith("child")) return ["start_subagent", { prompt: "CHILD_MARKER：返回合成结果。", description: "合成子任务" }]
       const code = name === "before" ? 'console.log("DONE")' : name === "failure" ? 'process.exit(7)' :
-        `const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);${name === "close-process" ? 'fs.writeFileSync("finished", "");' : ""}console.log("DONE")}},5)`
+        'const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("finished", "");console.log("DONE")}},5)'
       return ["start_process", { command: process.execPath, args: ["-e", code] }]
     }
     if (n === 2) return wait(name === "timeout" ? .03 : 10)
@@ -438,4 +439,32 @@ test("Pi 生命周期：close 打断压缩屏障中的就绪投递", { timeout: 
     assert.equal(f.counts().parent, 2)
     assert.equal(f.session.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === "yunpiangao.resume"), false)
   } finally { f.releaseSummary.resolve(); await compacting; await f.close({ stopped: true }) }
+})
+
+test("Pi 生命周期：abort 同步重入 close 只清理一次", { timeout: 15000 }, async (t) => {
+  const f = await fixture("input-stream")
+  let nested, disposed = 0, cleanups = 0, attached = false
+  const sessionID = f.session.sessionManager.getSessionId(), dispose = f.session.dispose
+  const unregister = registerSessionResourceCleanup((id) => { if (id === sessionID) cleanups++ })
+  t.mock.method(f.session, "dispose", function () { disposed++; return dispose.call(this) })
+  const unsubscribe = f.session.agent.subscribe((_event, signal) => {
+    if (attached) return
+    attached = true
+    signal.addEventListener("abort", () => { nested = f.closeAdapter() }, { once: true })
+  })
+  let running, outer
+  try {
+    running = f.session.prompt("启动并等待任务。")
+    await until(() => f.counts().parent === 2)
+    outer = f.closeAdapter()
+    await Promise.all([outer, nested, running])
+    assert.equal(disposed, 1)
+    assert.equal(cleanups, 1, "原生 session 资源清理不得重复")
+    assert.equal(nested, outer, "同步重入必须拿到已经公布的同一个清理 Promise")
+    assert.equal(f.counts().parent, 2)
+  } finally {
+    f.releaseWait.resolve(); await Promise.allSettled([outer, nested, running])
+    await f.release(); await until(() => existsSync(join(f.cwd, "finished")))
+    unsubscribe(); unregister(); await f.close({ stopped: true })
+  }
 })

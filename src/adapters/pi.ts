@@ -225,8 +225,11 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
 
   function close(): Promise<void> {
     if (closing) return closing
+    // abort 会同步调用宿主监听器；先公布 Promise，重入才能复用同一次清理。
+    let resolveClose!: () => void, rejectClose!: (reason: unknown) => void
+    closing = new Promise<void>((resolve, reject) => { resolveClose = resolve; rejectClose = reject })
     closed = true
-    closing = (async () => {
+    void (async () => {
       // 先撤销核心的投递资格，再 abort；终止子推理不能在关闭途中产生新的接续。
       const stopped = Promise.allSettled([engine.close(), runtime.close(), session?.abort(), ...[...children.keys()].map((child) => child.abort())])
       try {
@@ -241,7 +244,7 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
         parked = undefined
         session?.dispose()
       }
-    })()
+    })().then(resolveClose, rejectClose)
     return closing
   }
 }

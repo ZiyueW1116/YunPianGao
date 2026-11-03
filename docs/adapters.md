@@ -98,7 +98,7 @@ Pi 手动 compact 先调用 abort；停放 session 已无执行循环，因此�
 
 Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会复用并改变 SessionManager，旧实例的快照仍归原 session；新实例从空 runtime 开始，不接管旧 handle。`session_shutdown` 关闭当前实例；reload 再次执行同一个 inline extension 工厂时，已关闭实例不注册工具或事件。关闭后的工具调用及 `interrupt()` 抛出错误，`snapshot()` 仍可读取关闭时的结构化状态；已释放的原生 `session` 不能继续使用，reload 不会重新连接它。
 
-`close()` 同步标记实例关闭并调用两项核心的 close，撤销后续调度与投递资格；同时 abort 父 session 和已创建的子 session。关闭等待在途创建、原生 abort 及子 prompt 的结果收尾，然后 dispose。所有并发 close 等待同一次清理。已经被宿主接纳的输入无法撤回；关闭保留已确定的等待原因，尚未结算的等待记录为 `closed`，不会发起关闭通知的新模型轮次。快照中的任务状态在 runtime 关闭后停止更新，不代表外部任务均已结束。
+`close()` 在触发宿主回调前公布共享的关闭 Promise，同步标记实例关闭并调用两项核心的 close，撤销后续调度与投递资格；同时 abort 父 session 和已创建的子 session。关闭等待在途创建、原生 abort 及子 prompt 的结果收尾，然后 dispose。并发调用及 abort 监听器的同步重入均等待同一次清理，不重复触发 SDK 资源释放。已经被宿主接纳的输入无法撤回；关闭保留已确定的等待原因，尚未结算的等待记录为 `closed`，不会发起关闭通知的新模型轮次。快照中的任务状态在 runtime 关闭后停止更新，不代表外部任务均已结束。
 
 子创建在资源加载、SDK 返回与绑定完成后复核关闭状态及工具取消信号；失败或失效时释放已返回的子 session，不发布 handle、不启动子 prompt。父入口在资源加载、SDK 创建或回调安装失败时关闭已拥有的资源，并向调用方传播错误。Pi 的资源加载、创建及绑定接口没有这里可用的统一取消参数；关闭须等待在途调用返回，再清理迟到的对象，不承诺固定关闭时限。
 
