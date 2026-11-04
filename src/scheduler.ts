@@ -12,7 +12,7 @@ export interface CompactionPort {
   latestCompleted(sessionID: string, signal: AbortSignal): Promise<CompletedSource | undefined>
   /** 生成临时摘要，不增加用户消息、不持有主执行循环的锁。 */
   prepare(sessionID: string, source: CompletedSource, signal: AbortSignal): Promise<PreparedSummary>
-  /** 入队后，在原生持久化边界调用 takePrepared，复核当前上下文指纹。 */
+  /** 入队后，在原生持久化边界调用 takePrepared，复核提交资格与当前上下文指纹。 */
   compact(sessionID: string, source: CompletedSource, signal: AbortSignal): Promise<void>
   wait(sessionID: string, signal: AbortSignal): Promise<void>
   onError?(error: unknown): void
@@ -107,6 +107,9 @@ export function createYunPianGao(port: CompactionPort, options: Options = {}) {
       state.epoch += 1
       state.idle = false
       if (state.timer) clearTimeout(state.timer)
+      const job = jobs.get(sessionID)
+      // 保留提交标记，让原生回调收到过期错误。
+      if (job?.committing) job.prepared = undefined
     },
     onExecution(sessionID: string, phase: ExecutionPhase) {
       if (closed) return

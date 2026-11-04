@@ -71,7 +71,7 @@ OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实�
 
 完整回答后，等待 `idleDelayMs`（默认 1,500 毫秒）。最近完整回答的 input、output、cache read 和 cache write 用量之和达到 `thresholdTokens`（默认 100,000）时，在主执行循环外使用 Pi 原生摘要函数生成临时结果。阈值应低于模型的原生硬压缩阈值，并为最后一轮增长留出余量。
 
-新输入使准备中的摘要失效。提交使用 `session.compact()` 和 `session_before_compact`，复核输入版本、模型、系统提示、原生分支及依赖状态；不一致时取消提交并保留完整历史。Pi 原生摘要生成不附带工具声明；输出预算及摘要格式由锁定版本的 Pi 管理。完整上下文被摘要，原生设置选择的尾部仍保留。Pi 入口仅支持 `prepare-then-commit`；原生自动压缩继续由宿主管理。
+新输入使准备中或已入队、尚待复核的摘要失效。提交使用 `session.compact()` 和 `session_before_compact`，复核摘要资格及输入版本、模型、系统提示、原生分支和依赖状态；复核失败时取消提交并保留完整历史。Pi 原生摘要生成不附带工具声明；输出预算及摘要格式由锁定版本的 Pi 管理。完整上下文被摘要，原生设置选择的尾部仍保留。Pi 入口仅支持 `prepare-then-commit`；原生自动压缩继续由宿主管理。
 
 ## 任务等待
 

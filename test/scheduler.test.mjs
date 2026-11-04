@@ -119,6 +119,22 @@ test("提交边界的指纹变化拒绝旧摘要", async () => {
   } finally { await f.engine.close() }
 })
 
+test("摘要入队后收到新输入，即使提交指纹不变也拒绝旧摘要", async () => {
+  const gate = deferred()
+  let queued = false
+  const f = fixture({
+    async compact() {},
+    async wait() { queued = true; await gate.promise },
+  })
+  try {
+    f.engine.onExecution("one", "succeeded")
+    await until(() => queued)
+    f.engine.onInput("one")
+    f.engine.onExecution("one", "started")
+    assert.throws(() => f.engine.takePrepared("one", "context-one"), StaleSummaryError)
+  } finally { gate.resolve(); await f.engine.close() }
+})
+
 test("生成失败不提交，后续最终回答仍可触发", async () => {
   let attempt = 0
   const f = fixture({ async prepare() {
