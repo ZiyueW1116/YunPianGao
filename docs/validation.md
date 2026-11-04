@@ -6,6 +6,8 @@
 
 `test/openhands_runtime.py` 从产品 `OpenHandsSession` 创建真实 LocalConversation，由 OpenHands 调用模型、调度工具、发出原生事件、执行 `pause/run/send_message/condense/fork/close`。每个入口启动构建后的 Node 专用桥接，实际调用现有 `scheduler.ts`、`wait.ts` 和 `process.ts`。测试没有替换 Agent 步骤循环；模型是仅监听本机回环地址的 OpenAI-compatible HTTP 替身，工具选择与回复均由它预设。
 
+GitHub Actions 的 `openhands` 任务在 Ubuntu 上使用 Node.js 22 和 Python 3.13，从 `python/requirements.lock` 安装依赖后运行同一套测试。
+
 场景覆盖：
 
 - 进程完成、注册前完成、非零退出、超时后同 handle 重等、等待期间用户输入、独立取消、显式 interrupt，以及同批 wait_for 和另一启动工具正常返回。
