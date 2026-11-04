@@ -6,6 +6,8 @@
 
 Codex CLI 0.166.0 提供独立的[实验性等待入口](docs/codex.md) `@ziyuew1116/yunpiangao/codex`，使用真实 app-server 动态工具和原生执行对象。该入口保持等待工具待回包；不支持空闲预生成摘要提交或等待期间压缩，不属于完整云片糕语义移植。代码流与数据流见[Codex 自包含说明](docs/codex.html)。
 
+Hermes Agent v0.22.6 提供独立的 Python 嵌入与终端入口，需要固定版本的最小宿主补丁；使用方法、52 项入口与管道验证和支持边界见 [Hermes 说明](docs/hermes.md) 与[自包含代码流 / 数据流说明](docs/hermes.html)。原版 CLI、Gateway、HTTP API 尚未接入。
+
 ## 在 Pi SDK 中使用
 
 当前从源码构建，尚未发布 npm 包。需要 Node.js 22 或更新版本。

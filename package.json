@@ -39,7 +39,10 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.py",
+    "dist/claude-mod",
     "server.js",
     "README.md",
     "LICENSE",
@@ -53,7 +56,7 @@
     "scripts/deepseek-overlay.mjs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs && node scripts/copy_hermes.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
@@ -62,12 +65,13 @@
     "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
     "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs",
     "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "test:hermes": "npm run build && python3 scripts/test_hermes.py",
     "test:openhands": "npm run build && node scripts/test_openhands.mjs",
     "install:codex": "node scripts/install-codex.mjs",
     "precheck": "node scripts/patch-deepseek.mjs",
     "prebuild": "node scripts/patch-deepseek.mjs",
     "test:deepseek": "npm run build && node --test test/deepseek-runtime.test.mjs test/deepseek-profile.test.mjs",
-    "test:legacy": "npm run build && node --test test/adapter.test.mjs test/claude-defer.test.mjs test/claude-runtime.test.mjs test/codex-runtime.test.mjs test/opencode-wait.test.mjs test/pi-runtime.test.mjs test/scheduler.test.mjs test/wait.test.mjs"
+    "test:legacy": "npm run build && node --test test/adapter.test.mjs test/claude-defer.test.mjs test/claude-runtime.test.mjs test/codex-runtime.test.mjs test/hermes-core.test.mjs test/opencode-wait.test.mjs test/pi-runtime.test.mjs test/scheduler.test.mjs test/wait.test.mjs"
   },
   "engines": {
     "node": ">=22"

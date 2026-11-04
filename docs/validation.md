@@ -219,6 +219,12 @@ OpenCode 适配器使用自定义摘要提示词，移除工具定义，并通�
 - 核心构建输出为 ESM，CI 在 Node.js 22 和 24 上运行检查与测试。
 - 其他 Harness 通过 `CompactionPort` 接入；原生不透明替换窗口需要对应的端口实现，见 [适配契约](adapters.md)。
 
+## Hermes Agent v0.22.6
+
+固定源码加 [host.patch](hermes/host.patch)，通过独立的 Python / Node 嵌入入口验收。`npm run test:hermes` 实际运行 AIAgent 工具循环、原生进程与子生命周期服务、原生压缩及 SQLite 提交，模型服务是回环 HTTP 替身。原生生命周期回归另有 15 项通过，完整宿主 code-health 的稀疏源码扫描未完成。共 52 项入口与管道用例；使用的隔离目录、覆盖范围、延迟计量及未验证内容见 [Hermes 验证](hermes.md#验证)。
+
+`npm test` 额外包含两个 Hermes 核心管道场景，检查跨语言方法协议、查询补偿、同 ID 重试及原生提交回调重入核心；它们不替代真实宿主入口测试。
+
 ## DeepSeek Harness 0.2.2-alpha.3
 
 2026-11-03 在 macOS arm64、Node.js 26.3.1 上验证官方 npm `@deepseek-ai/dsh@0.2.2-alpha.3`，对应源码 `05b1cae8db6e674c5685101494d4eec24652424a`。npm alpha 指向该版本；查阅时 latest 已为 `0.2.1-rc.5`，没有使用浮动 latest 安装。原生摘要补丁及可重复安装方式见 [DeepSeek 说明](deepseek.md#空闲摘要与宿主补丁)。

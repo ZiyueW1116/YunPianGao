@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 ROOT=Path(__file__).resolve().parents[1]
 ROOT_FILES={'README.md','LICENSE','package.json','package-lock.json','tsconfig.json','.gitignore','server.js'}
 SOURCE_DIRS={'src','test','docs','scripts','.github','examples','python'}
-SUFFIXES={'.ts','.js','.mjs','.py','.md','.html','.json','.yaml','.yml','.txt','.toml','.lock'}
+SUFFIXES={'.ts','.js','.mjs','.py','.md','.html','.json','.yaml','.yml','.txt','.toml','.lock','.patch'}
 SYNTHETIC_VALUES={'synthetic-only','fixture-only','test-only','redacted','[redacted]'}
 PRIVATE=[re.compile('/'+'mnt/cpfs/'),re.compile('/'+'Users/'),re.compile('/'+'root/'),
          re.compile(r'ses_[A-Za-z0-9]{20,}')]
