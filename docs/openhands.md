@@ -79,13 +79,15 @@ OH_PERSISTENCE_DIR="$PWD/.runtime/openhands/user" \
 
 完整回答后的空闲窗口由共用 Node 调度器检查最近一次回答用量。Python 复制原生只读 View，在主执行队列之外调用固定版本 `LLMSummarizingCondenser.condense`，保存其原生 `Condensation`，并把摘要文本与指纹交给核心。
 
-指纹覆盖输入代次、完整 Agent 配置、原生可见事件和结构化依赖。新输入先进入核心使旧结果失效，随后按顺序进入原生消息队列。提交调用公开的 `Conversation.condense()`；原生步骤锁与入口接纳锁共同覆盖复核和事件写入。自定义 Condenser 在这个边界调用 `takePrepared`，仅在合格时返回保存的原生载荷。过期结果使本次提交失败，保留完整历史，不偷偷再生成另一个摘要。
+指纹覆盖输入代次、完整 Agent 配置、原生可见事件和结构化依赖。新输入先进入核心使旧结果失效，随后按顺序进入原生消息队列。提交调用公开的 `Conversation.condense()`，原生步骤锁与入口接纳锁覆盖宿主指纹复核和事件写入。Node 在同一次同步调用中读取当前依赖、合成完整指纹并调用 `takePrepared`。自定义 Condenser 只在复核通过时返回保存的原生载荷。过期结果使本次提交失败，保留完整历史。
 
 普通模型步骤仍使用原生 Condenser 的自动压缩条件。手动 `ypg.condense()` 使用同一个原生实现。等待期间压缩和结果投递在入口队列串行；结果先到达时由核心保持 ready 状态，压缩完成后再接续。摘要只改变宿主可见历史，依赖、deadline、结果和恢复原因保留在核心状态，每次模型请求通过新的 View 普通用户内容投影提供。任务原始输出只随工具结果或接续消息传递，不写入系统指令。
 
 ## 输入、接续与生命周期
 
-`prompt`、`send_message`、`run`、`condense`、`fork` 返回 `concurrent.futures.Future`。`prompt` 合并发送和执行；单独 `send_message` 只入队，之后调用 `run`。公开的 `ypg.conversation` 是受管 LocalConversation：这些原生方法也回到入口队列。入口只管理同步 `run()`，不接入原生 `arun()` 或调用方自行发起的底层 `agent.step()`。不要在 SDK 回调或工具执行器中同步等待主队列上的操作，以免等待自己收尾。
+`prompt`、`send_message`、`run`、`condense`、`confirm`、`fork` 返回 `concurrent.futures.Future`。`prompt` 合并发送和执行。单独 `send_message` 只入队，之后可调用 `run`。公开的 `ypg.conversation` 是受管 LocalConversation，其对应的原生方法也回到入口队列。入口只管理同步 `run()`，不接入原生 `arun()` 或调用方自行发起的底层 `agent.step()`。不要在 SDK 回调或工具执行器中同步等待主队列上的操作，以免等待自己收尾。
+
+主会话有待确认工具时，`prompt()`、`run()` 和手动或自动压缩均拒绝执行。`prompt()` 此时不会追加消息，需要补充说明时可单独调用 `send_message()`。嵌入方通过 `ypg.confirm(approved=True)` 批准当前批次，或通过 `ypg.confirm(approved=False)` 拒绝，再由入口继续执行。如果排队期间待确认批次发生变化，调用方需要重新核对。原生 `conversation.navigate_to()` 也经同一队列串行执行。任务接续消息仍可入队，待确认期间由明确的确认决定继续执行。
 
 入口选择同步 `Conversation.run()` 的真实执行循环。模型调用期间，新输入立即失效旧资格，但消息须等当前原生执行返回才能交给 `send_message()`；它不是流式 steering。`pause()` 受 SDK 步骤锁约束，不能立即停止正在进行的模型调用或任意工具。`interrupt()` 的暂停请求在独立控制线程发出，不会排在整轮执行之后；关闭也请求暂停，并等待模型调用、工具和在途子会话创建收尾。关闭延迟受调用方配置的 SDK 网络期限和工具协作行为约束。
 

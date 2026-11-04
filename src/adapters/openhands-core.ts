@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { createInterface } from "node:readline"
 import { createYunPianGao, type Options } from "../scheduler.js"
 import { createWaitRuntime } from "../wait.js"
@@ -23,6 +24,19 @@ function call(method: string, params: unknown = {}, signal?: AbortSignal): Promi
   })
 }
 const report = () => send({ diagnostic: "云片糕宿主操作未完成；请检查当前实例状态。" })
+
+function dependencies() {
+  const { tasks, waits } = runtime.snapshot(sessionID)
+  return {
+    tasks: tasks.map(({ handle, status, finishedAt }) => ({ handle, status, finishedAt })),
+    waits: waits.map(({ snapshot: _, ...wait }) => wait),
+  }
+}
+
+function summaryFingerprint(hostFingerprint: string) {
+  return createHash("sha256").update(JSON.stringify([hostFingerprint, dependencies()])).digest("hex")
+}
+
 async function dispatch(method: string, p: any) {
   if (method === "init") {
     if (initialized) throw new Error("OpenHands 核心桥接不可重复初始化。")
@@ -65,7 +79,9 @@ async function dispatch(method: string, p: any) {
     case "stop": runtime.stopWaits(sessionID, p.waitID); return null
     case "cancel": await runtime.cancel(sessionID, p.handle); return null
     case "refresh": await runtime.refresh(p.handle); return null
-    case "take_prepared": return engine.takePrepared(sessionID, p.fingerprint) ?? null
+    case "dependencies": return dependencies()
+    case "summary_fingerprint": return summaryFingerprint(p.hostFingerprint)
+    case "take_prepared": return engine.takePrepared(sessionID, summaryFingerprint(p.hostFingerprint)) ?? null
     default: throw new Error("未知的 OpenHands 核心操作。")
   }
 }

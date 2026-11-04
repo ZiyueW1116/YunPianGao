@@ -6,9 +6,11 @@
 
 `test/openhands_runtime.py` 从产品 `OpenHandsSession` 创建真实 LocalConversation，由 OpenHands 调用模型、调度工具、发出原生事件、执行 `pause/run/send_message/condense/fork/close`。每个入口启动构建后的 Node 专用桥接，实际调用现有 `scheduler.ts`、`wait.ts` 和 `process.ts`。测试没有替换 Agent 步骤循环；模型是仅监听本机回环地址的 OpenAI-compatible HTTP 替身，工具选择与回复均由它预设。
 
-44 个场景覆盖：
+场景覆盖：
 
 - 进程完成、注册前完成、非零退出、超时后同 handle 重等、等待期间用户输入、独立取消、显式 interrupt，以及同批 wait_for 和另一启动工具正常返回。
+- 主 Conversation 待确认时，普通输入、手动压缩和原生 `run` 均被拒绝。任务完成后的接续消息可入队，模型请求等待显式决定。分支切换在当前执行结束后生效，测试使用文件写入验证并发切换及批准和拒绝的结果。
+- 在 Python 生成宿主指纹后、Node 取用预备摘要前让真实后台进程完成，验证 Node 使用最新依赖拒绝旧摘要，且原生历史没有新增 Condensation。
 - 独立子 Conversation 的正常文本和原生 FinishTool 完成、provider 失败、用户输入后重等、独立取消、等待期间压缩；子任务确认策略产生 input_required，父会话实际接续，外部确认后相同 handle 可再次等待成功。合成写入工具在批准前没有副作用，批准后才执行。另有原生 UserPromptSubmit hook 拒绝子输入的场景：子模型请求为 0，执行限额被继承，没有最终回答的结束状态报告 failed。
 - 等待期间手动原生 Condensation；摘要请求仍被门闩阻塞时任务完成，接续只在压缩结束后启动；普通步骤的原生自动压缩仍有效，压缩后的模型请求能找回结构化依赖。
 - 回答后的空闲摘要准备与原生提交，准备期间新输入使旧结果失效，以及提交边界输入代次变化后拒绝旧摘要。View 通过 SDK 序列化投影复制，避免复制系统事件内的执行器锁，不修改缓存 View。
@@ -34,7 +36,9 @@ npm pack --dry-run
 
 2026-11-03 在 macOS arm64、Node.js 26.3.1、Python 3.13.18 上验收。完整任务正常启动、等待、接续为 3 次父模型请求；超时重等为 4 次；输入后重等或独立取消后重等为 5 次；显式 interrupt 后保持 2 次。普通子任务另有 1 次子模型请求，权限介入另需原生后续步骤。15 个输出计量记录的任务场景中，额外父模型唤醒和时长至少 60 秒的 sleep 工具调用均为 0；检查读取真实 ActionEvent 参数。测试使用 10 毫秒核心查询间隔，TaskSnapshot.finishedAt 到接续 provider 请求的本次观测为 10–23 毫秒，包含跨语言传递，不是生产性能保证。替身主模型用量通常为每请求 20 tokens，摘要触发首轮为 1,010；这些值用于调度断言，不代表真实计费。
 
-`npm test` 的 112 项现有回归通过；OpenHands 的 44 项真实入口测试通过。TypeScript 检查、Python 编译、公开内容审计、npm 归档清单、归档解包后的 Python/Node 创建关闭、Python wheel 构建及可安装入口检查通过。上游 Pydantic 关于 TypedDict ReadOnly 的一条 warning 不影响断言。原 Pi/OpenCode 结果未用于替代 OpenHands 验收。
+2026-11-03 的验收通过了 112 项 `npm test` 回归和 44 项 OpenHands 真实入口测试。TypeScript 检查、Python 编译、公开内容审计、npm 归档清单、归档解包后的 Python/Node 创建关闭、Python wheel 构建及可安装入口检查通过。上游 Pydantic 关于 TypedDict ReadOnly 的一条 warning 不影响断言。原 Pi/OpenCode 结果未用于替代 OpenHands 验收。
+
+2026-11-04 在同一 SDK 版本下重跑 TypeScript 检查、112 项 `npm test` 回归和 49 项 OpenHands 真实入口测试，均通过。
 
 测试证明固定 SDK 的执行与适配语义，不证明真实模型自主选择、摘要保真度、性能收益或外部服务取消时延。同步 run 的在途请求仍受原生步骤锁和 SDK 网络期限约束；远端 Agent Server、ACP、MCP 配置接管、Windows、跨重启恢复未验证。
 

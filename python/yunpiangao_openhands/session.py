@@ -42,7 +42,7 @@ class PreparedCondenser(CondenserBase):
         with owner._admission:
             owner._require_open()
             if view.unhandled_condensation_request and owner._committing:
-                text = owner._core.call("take_prepared", {"fingerprint": owner._fingerprint(view)})
+                text = owner._core.call("take_prepared", {"hostFingerprint": owner._host_fingerprint(view)})
                 if text is None or owner._prepared is None:
                     raise RuntimeError("原生提交没有合格的预备摘要，保留完整历史。")
                 return owner._prepared.model_copy(update={"summary": text})
@@ -52,7 +52,7 @@ class PreparedCondenser(CondenserBase):
         with owner._admission:
             owner._require_open()
             owner._model_epoch = owner._delivered_epoch
-            state = owner._dependencies()
+            state = owner._core.call("dependencies")
             if not state["tasks"]:
                 return native
             dependency = MessageEvent(source="environment", llm_message=Message(
@@ -88,6 +88,15 @@ class ManagedConversation(LocalConversation):
 
     def fork(self, **options):
         return self.owner.fork(**options).result()
+
+    def navigate_to(self, event_id):
+        if self.owner is None:
+            return super().navigate_to(event_id)
+
+        def operation():
+            self.owner._require_open()
+            return LocalConversation.navigate_to(self, event_id)
+        return self.owner._submit(operation).result()
 
     def switch_llm(self, llm):
         result = super().switch_llm(llm)
@@ -195,17 +204,53 @@ class OpenHandsSession:
         with self._admission:
             self._delivered_epoch = self._epoch if epoch is None else epoch
 
+    def _pending_action_ids(self):
+        state = self.conversation.state
+        return tuple(action.id for action in state.get_unmatched_actions(state.active_branch()))
+
+    def _require_no_pending_actions(self):
+        if self._pending_action_ids():
+            raise RuntimeError("主会话有待确认工具，请先调用 confirm(approved=...) 作出决定。")
+
     def prompt(self, message):
         with self._admission:
             self._input()
             epoch = self._epoch
             def operation():
+                self._require_no_pending_actions()
                 self._send(message, epoch=epoch)
                 self._run()
             return self._worker.submit(operation)
 
     def run(self):
-        return self._submit(self._run)
+        def operation():
+            self._require_no_pending_actions()
+            self._run()
+        return self._submit(operation)
+
+    def confirm(self, *, approved: bool):
+        """批准或拒绝调用时主会话的待确认工具，然后继续执行。"""
+        if type(approved) is not bool:
+            raise TypeError("approved 必须是布尔值。")
+        state = self.conversation.state
+        leaf = state.leaf_event_id
+        with state:
+            self._require_open()
+            if state.leaf_event_id != leaf:
+                raise RuntimeError("主会话在确认期间已变化，请核对后重试。")
+            pending = self._pending_action_ids()
+        if not pending:
+            raise RuntimeError("主会话没有待确认工具。")
+
+        def operation():
+            with state:
+                self._require_open()
+                if self._pending_action_ids() != pending:
+                    raise RuntimeError("待确认工具已变化，请核对后重新确认。")
+                if not approved:
+                    self.conversation.reject_pending_actions()
+            self._run()
+        return self._submit(operation)
 
     def _run(self):
         self._require_open()
@@ -337,14 +382,9 @@ class OpenHandsSession:
             child["future"] = self._child_workers.submit(self._run_child, child_id, "已确认的子任务")
         self._core.call("child_changed", {"executionID": child_id})
 
-    def _dependencies(self):
-        state = self._core.call("snapshot")
-        return {"tasks": [{key: task[key] for key in ("handle", "status", "finishedAt") if key in task} for task in state["tasks"]],
-            "waits": [{key: value for key, value in wait.items() if key != "snapshot"} for wait in state["waits"]]}
-
-    def _fingerprint(self, view):
+    def _host_fingerprint(self, view):
         value = [self._epoch, self.conversation.agent.model_dump(mode="json"),
-            [event.model_dump(mode="json") for event in view.events], self._dependencies()]
+            [event.model_dump(mode="json") for event in view.events]]
         return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def _port(self, operation, value):
@@ -365,7 +405,7 @@ class OpenHandsSession:
             with self.conversation.state, self._admission:
                 self._require_open()
                 view = View.model_validate(self.conversation.state.view.model_dump(mode="json"))
-                fingerprint = self._fingerprint(view)
+                fingerprint = self._core.call("summary_fingerprint", {"hostFingerprint": self._host_fingerprint(view)})
                 native = self.conversation.agent.condenser.native
             prepared = native.condense(view.model_copy(update={"unhandled_condensation_request": True}), agent_llm=self.conversation.agent.llm)
             if not isinstance(prepared, Condensation):
@@ -375,11 +415,11 @@ class OpenHandsSession:
             return {"text": prepared.summary, "fingerprint": fingerprint}
         if operation == "compact":
             def commit():
-                with self._admission:
+                with self.conversation.state, self._admission:
                     self._require_open()
                     self._committing = True
                     try:
-                        LocalConversation.condense(self.conversation)
+                        self._condense()
                         self._latest = None
                     finally:
                         self._committing = False
@@ -388,7 +428,7 @@ class OpenHandsSession:
         if operation == "resume":
             wait_id = value["id"]
             def resume():
-                with self._admission:
+                with self.conversation.state, self._admission:
                     self._require_open()
                     sender = "yunpiangao.resume:" + wait_id
                     accepted = wait_id in self._accepted or any(isinstance(event, MessageEvent) and event.sender == sender
@@ -399,12 +439,22 @@ class OpenHandsSession:
                     self._accepted.add(wait_id)
                     if wait_id not in self._resumed:
                         self._resumed.add(wait_id)
-                        self._worker.submit(self._run)
+                        self._worker.submit(self._resume_run)
             return self._submit(resume).result()
         raise RuntimeError("未知的 OpenHands 宿主端口。")
 
+    def _resume_run(self):
+        if not self._pending_action_ids():
+            self._run()
+
+    def _condense(self):
+        with self.conversation.state:
+            self._require_open()
+            self._require_no_pending_actions()
+            LocalConversation.condense(self.conversation)
+
     def condense(self):
-        return self._submit(lambda: LocalConversation.condense(self.conversation))
+        return self._submit(self._condense)
 
     def interrupt(self):
         with self._admission:

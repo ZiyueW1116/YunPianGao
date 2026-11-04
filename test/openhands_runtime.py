@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -27,6 +28,7 @@ sys.path.insert(0, str(ROOT / "python"))
 from openhands.sdk import Action, Agent, LLM, Observation, TextContent, Tool, ToolDefinition
 from openhands.sdk.tool import ToolExecutor, register_tool
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.event import ActionEvent, Condensation, MessageEvent, ObservationEvent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
@@ -272,6 +274,32 @@ def test_idle_summary(name, monkeypatch):
         f.close()
 
 
+def test_idle_summary_rechecks_dependencies_at_take(monkeypatch):
+    f = Fixture("complete", {"thresholdTokens": 1, "idleDelayMs": 5})
+    choose = f.choose
+    monkeypatch.setattr(f, "choose", lambda n: choose(n) if n == 1 else None)
+    call = f.session._core.call
+    took = threading.Event()
+
+    def finish_task_before_take(method, params=None):
+        if method == "take_prepared":
+            assert call("snapshot")["tasks"][0]["status"] == "working"
+            f.release()
+            until(lambda: call("snapshot")["tasks"][0]["status"] == "succeeded")
+            took.set()
+        return call(method, params)
+
+    monkeypatch.setattr(f.session._core, "call", finish_task_before_take)
+    try:
+        f.session.prompt("启动后台任务后结束本轮回答。").result(15)
+        assert took.wait(12)
+        until(lambda: bool(f.session.diagnostics))
+        assert f.summaries == 1
+        assert not any(isinstance(event, Condensation) for event in f.session.conversation.state.events)
+    finally:
+        f.close()
+
+
 def test_input_during_model():
     f = Fixture("input-stream")
     try:
@@ -335,6 +363,129 @@ def test_child_permission(monkeypatch):
         assert (f.cwd / "permission-proof").read_text() == "合成权限检查"
     finally:
         f.close()
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_parent_permission_requires_explicit_decision(approved, monkeypatch):
+    f = Fixture("summary-permission")
+    monkeypatch.setattr(f, "choose", lambda n: ("proof", {"text": "已确认"}) if n == 1 else None)
+    try:
+        conversation = f.session.conversation
+        conversation.set_confirmation_policy(AlwaysConfirm())
+        f.session.prompt("申请写入。").result(15)
+        assert conversation.state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        proof = f.cwd / "permission-proof"
+        with pytest.raises(RuntimeError, match="待确认工具"):
+            f.session.prompt("拒绝执行，请勿写入。").result(15)
+        with pytest.raises(RuntimeError, match="待确认工具"):
+            conversation.condense()
+        with pytest.raises(RuntimeError, match="待确认工具"):
+            conversation.run()
+        assert not proof.exists()
+        assert f.parent == 1 and f.summaries == 0
+        assert conversation.state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+
+        f.session.confirm(approved=approved).result(15)
+        assert proof.exists() is approved
+        assert f.parent == 2
+        assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    finally:
+        f.close()
+
+
+def test_parent_permission_defers_automatic_resume(monkeypatch):
+    f = Fixture("complete")
+    resume_requested = threading.Event()
+    release_resume = threading.Event()
+    dispatch = f.session._core._dispatch
+    choose = f.choose
+
+    def delay_resume(method, params):
+        if method == "resume":
+            resume_requested.set()
+            assert release_resume.wait(15)
+        return dispatch(method, params)
+
+    def choose_with_confirmation(n):
+        if n <= 2:
+            return choose(n)
+        if n == 3:
+            return "proof", {"text": "待确认写入"}
+        return None
+
+    monkeypatch.setattr(f.session._core, "_dispatch", delay_resume)
+    monkeypatch.setattr(f, "choose", choose_with_confirmation)
+    try:
+        f.session.prompt("启动后台任务并等待。").result(15)
+        f.release()
+        assert resume_requested.wait(12)
+        conversation = f.session.conversation
+        conversation.set_confirmation_policy(AlwaysConfirm())
+        f.session.prompt("申请写入。").result(15)
+        assert conversation.state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        release_resume.set()
+        until(lambda: f.session.snapshot()["waits"][0]["state"] == "delivered")
+        f.session._submit(lambda: None).result(15)
+        assert conversation.state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        assert not (f.cwd / "permission-proof").exists()
+        assert f.parent == 3
+
+        f.session.confirm(approved=False).result(15)
+        assert f.parent == 4
+        assert "云片糕等待已结束" in json.dumps(f.calls[-1]["body"], ensure_ascii=False)
+        assert not (f.cwd / "permission-proof").exists()
+    finally:
+        release_resume.set()
+        f.close()
+
+
+def test_parent_permission_serializes_branch_navigation(monkeypatch):
+    f = Fixture("summary-navigation")
+    monkeypatch.setattr(f, "choose", lambda n: ("proof", {"text": "待确认写入"}) if n == 1 else None)
+    run_started = threading.Event()
+    release_run = threading.Event()
+    navigation_started = threading.Event()
+    call = f.session._core.call
+    submit = f.session._submit
+
+    def pause_before_native_run(method, params=None):
+        if method == "execution" and params["phase"] == "started":
+            run_started.set()
+            assert release_run.wait(15)
+        return call(method, params)
+
+    def record_submission(operation):
+        future = submit(operation)
+        navigation_started.set()
+        return future
+
+    def navigate():
+        conversation.navigate_to(action.id)
+        navigation_started.set()
+
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        try:
+            conversation = f.session.conversation
+            conversation.set_confirmation_policy(AlwaysConfirm())
+            f.session.prompt("申请写入。").result(15)
+            action = next(event for event in conversation.state.active_branch() if isinstance(event, ActionEvent))
+            conversation.navigate_to(action.parent_id)
+            monkeypatch.setattr(f.session._core, "call", pause_before_native_run)
+            running = f.session.run()
+            assert run_started.wait(12)
+            monkeypatch.setattr(f.session, "_submit", record_submission)
+            navigation = callers.submit(navigate)
+            assert navigation_started.wait(12)
+            assert conversation.state.leaf_event_id == action.parent_id
+
+            release_run.set()
+            running.result(15)
+            navigation.result(15)
+            assert conversation.state.leaf_event_id == action.id
+            assert not (f.cwd / "permission-proof").exists()
+        finally:
+            release_run.set()
+            f.close()
 
 
 @pytest.mark.parametrize("method", ["close", "switch", "fork", "branch"])
@@ -540,7 +691,6 @@ def test_child_creation_failure(boundary, monkeypatch):
 
 
 def test_direct_creation_close(monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
     f = Fixture("child")
     entered, release = threading.Event(), threading.Event()
     pool = ThreadPoolExecutor(max_workers=1)
