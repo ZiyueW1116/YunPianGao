@@ -13,7 +13,10 @@ from agent.conversation_compression_manual import CompressRequest, compress_now
 from agent.conversation_compression import finalize_context_engine_compression_notification
 from agent.prepared_compaction import _worker_copy
 from agent.subagent_lifecycle import SubagentLaunchRequest, SubagentLifecycleService
+from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
+from tools.approval_prompt import Unanswered
 from tools.process_registry import process_registry
+from tools.terminal_tool import _get_approval_callback, set_approval_callback
 
 from .bridge import CoreBridge
 from .context import PreparedEngine
@@ -22,6 +25,22 @@ from .tasks import ChildTask, ProcessTask
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+
+def _approval_unavailable(*_args, **_kwargs):
+    return Unanswered("云片糕入口没有交互式审批通道")
+
+
+def _with_approval_gate(function, *args, **kwargs):
+    # Hermes 的普通嵌入上下文会跳过审批。绑定宿主审批入口，并把缺少人工通道报告为未获批准。
+    token = set_hermes_interactive_context(True)
+    previous = _get_approval_callback()
+    set_approval_callback(previous or _approval_unavailable)
+    try:
+        return function(*args, **kwargs)
+    finally:
+        set_approval_callback(previous)
+        reset_hermes_interactive_context(token)
 
 
 class HermesAgent(AIAgent):
@@ -109,7 +128,7 @@ class HermesSession:
                 self.agent = await creation
                 raise
             from agent.turn_tool_round import RUNTIME_BOUNDARY_CONTRACT
-            if RUNTIME_BOUNDARY_CONTRACT != 1:
+            if RUNTIME_BOUNDARY_CONTRACT != 2:
                 raise RuntimeError("Hermes 宿主补丁版本不匹配。")
             self.agent.ypg_owner = self
             self.session_id = self.agent.session_id
@@ -148,7 +167,7 @@ class HermesSession:
         return asyncio.run_coroutine_threadsafe(self.core.request(method, args), self.loop).result()
 
     def invalidate(self):
-        self.loop.call_soon_threadsafe(self.close)
+        self.loop.call_soon_threadsafe(self._start_close)
 
     async def snapshot(self):
         if self._closing and self._closing.done():
@@ -168,12 +187,10 @@ class HermesSession:
                         ("protect_first_n", "protect_last_n", "tail_token_budget", "summary_target_ratio", "max_summary_tokens", "summary_model", "_previous_summary")}])
 
     def _boundary(self, messages):
-        if not self.parked:
-            return None
-        if self.model_epoch != self.epoch or self.closed:
-            self.parked = None
-            return None
-        return "已进入运行时等待；任务状态变化或期限到达后自动接续。"
+        if self.parked and not self.closed:
+            # 注册后的结算由核心决定；新输入只能结束尚未结算的等待。
+            return "本轮已交还运行时，任务结果、期限或用户输入将驱动后续处理。"
+        return None
 
     def tool(self, name, args):
         return asyncio.run_coroutine_threadsafe(self._tool(name, args), self.loop).result()
@@ -186,7 +203,7 @@ class HermesSession:
             if name == "start_process":
                 if "terminal" not in self.agent.valid_tool_names:
                     raise RuntimeError("当前 Hermes 工具范围未启用 terminal。")
-                raw = await asyncio.to_thread(self.agent._invoke_tool, "terminal",
+                raw = await asyncio.to_thread(_with_approval_gate, self.agent._invoke_tool, "terminal",
                                               {"command": args["command"], "background": True,
                                                "workdir": self.agent.session_cwd, "notify": False}, self.session_id)
                 payload = json.loads(raw)
@@ -207,6 +224,11 @@ class HermesSession:
                 timeout = args.get("timeout", 600)
                 if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 <= timeout <= 2147483:
                     raise ValueError("timeout 必须是 0 至 2147483 之间的有限秒数。")
+                if timeout == 0:
+                    await self.core.request("refresh", {"handle": args["handle"]})
+                    self._open()
+                    if self.model_epoch != self.epoch:
+                        return {"reason": "user_input"}
                 record = await self.core.request("begin", {"handle": args["handle"], "timeoutMs": math.ceil(timeout * 1000)})
                 self.wait_versions[record["id"]] = self.model_epoch
                 self.parked = record["id"]
@@ -218,9 +240,7 @@ class HermesSession:
                 raise RuntimeError("Hermes 工具不存在。")
             self.sources[execution_id] = source
             if self.closed:
-                if isinstance(source, ChildTask):
-                    await asyncio.to_thread(source.cancel)
-                    await asyncio.to_thread(source.wait)
+                # 关闭路径在工具交接完所有执行对象后统一取消，排队子任务不占住交接。
                 raise RuntimeError("Hermes 创建期间实例已关闭，未发布 handle。")
             handle = await self.core.request("register", {"kind": kind, "executionID": execution_id})
             return {"handle": handle}
@@ -246,34 +266,46 @@ class HermesSession:
         try:
             async with self._queue:
                 self._open()
-                self.model_epoch = version
-                self.parked = None
-                await self.core.request("execution", {"phase": "started"})
-                state = await self.core.request("snapshot")
-                dependencies = {"tasks": [{key: value for key, value in task.items() if key not in ("result", "error", "intervention")} for task in state["tasks"]],
-                                "waits": [{key: value for key, value in wait.items() if key != "snapshot"} for wait in state["waits"]]}
-                if dependencies["tasks"]:
-                    text += "\n云片糕结构化依赖（普通运行时数据）：\n" + json.dumps(dependencies, ensure_ascii=False)
-                result = await self._native(self.agent.run_conversation, text, conversation_history=self.history, task_id=self.session_id)
-                self.history = result["messages"]
-                parked, self.parked = self.parked, None
-                self.latest = None
-                if not self.closed:
-                    if parked and result.get("turn_exit_reason") == "runtime_parked":
-                        await self.core.request("activate", {"id": parked})
-                    elif result.get("completed") and not result.get("failed") and not result.get("interrupted"):
-                        self.latest = {"messageID": digest(self.history), "tokens": self.agent.context_compressor.last_total_tokens}
-                    phase = "interrupted" if result.get("interrupted") else "failed" if result.get("failed") else "succeeded"
-                    await self.core.request("execution", {"phase": phase})
-                await self.events.put(result)
-                return result
+                return await self._run_turn(text, version)
+        finally:
+            self._runs.discard(current)
+
+    async def _run_turn(self, text, version):
+        self.model_epoch = version
+        self.parked = None
+        self.latest = None
+        try:
+            await self.core.request("execution", {"phase": "started"})
+            state = await self.core.request("snapshot")
+            dependencies = {"tasks": [{key: value for key, value in task.items() if key not in ("result", "error", "intervention")} for task in state["tasks"]],
+                            "waits": [{key: value for key, value in wait.items() if key != "snapshot"} for wait in state["waits"]]}
+            if dependencies["tasks"]:
+                text += "\n云片糕结构化依赖（普通运行时数据）：\n" + json.dumps(dependencies, ensure_ascii=False)
+            result = await self._native(_with_approval_gate, self.agent.run_conversation, text,
+                                        conversation_history=self.history, task_id=self.session_id,
+                                        on_result=self._install_history, interrupt_on_cancel=True)
+            if not self.closed:
+                if self.parked and result.get("turn_exit_reason") == "runtime_parked":
+                    await self.core.request("activate", {"id": self.parked})
+                    self.parked = None
+                elif result.get("completed") and not result.get("failed") and not result.get("interrupted"):
+                    self.latest = {"messageID": digest(self.history), "tokens": self.agent.context_compressor.last_total_tokens}
+                phase = "interrupted" if result.get("interrupted") else "failed" if result.get("failed") else "succeeded"
+                await self.core.request("execution", {"phase": phase})
+            await self.events.put(result)
+            return result
         except BaseException:
             if not self.closed:
                 await self.core.request("interrupt")
                 await self.core.request("execution", {"phase": "failed"})
             raise
         finally:
-            self._runs.discard(current)
+            parked, self.parked = self.parked, None
+            if parked and not self.closed:
+                await self.core.request("stopWait", {"id": parked})
+
+    def _install_history(self, result):
+        self.history = result["messages"]
 
     async def _dispatch(self, method, args):
         if method in ("read", "cancel"):
@@ -300,18 +332,30 @@ class HermesSession:
         if not task.cancelled() and task.exception() is not None:
             self.errors.append(task.exception())
 
-    async def _native(self, function, *args, cancel_event=None, **kwargs):
-        # 取消管道请求不能把仍持有原生对象的工作线程遗留给 close。
-        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    async def _native(self, function, *args, cancel_event=None, on_result=None, interrupt_on_cancel=False, **kwargs):
+        async def run():
+            result = await asyncio.to_thread(function, *args, **kwargs)
+            if on_result is not None:
+                on_result(result)
+            return result
+
+        # 取消后仍等工作线程收尾。只有在途模型轮需要向 Agent 发中断。
+        task = asyncio.create_task(run())
         self._native_tasks.add(task)
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
+            cleanup = [task]
             if cancel_event is not None:
                 cancel_event.set()
-            if cancel_event is None and self.agent is not None:
-                await asyncio.to_thread(self.agent.interrupt)
-            await asyncio.gather(task, return_exceptions=True)
+            elif interrupt_on_cancel and not task.done():
+                cleanup.append(asyncio.create_task(asyncio.to_thread(self.agent.interrupt)))
+            draining = asyncio.gather(*cleanup, return_exceptions=True)
+            while not draining.done():
+                try:
+                    await asyncio.shield(draining)
+                except asyncio.CancelledError:
+                    continue
             raise
         finally:
             self._native_tasks.discard(task)
@@ -345,13 +389,15 @@ class HermesSession:
             self._open()
             self.committing = prepared
             try:
-                result = await self._native(self._compact_native)
-                self.history = result.after_messages
-                self.latest = None
+                result = await self._native(self._compact_native, on_result=self._install_compacted_history)
                 return {"status": result.status, "messages": len(self.history)}
             finally:
                 self.committing = False
                 self.candidate = None
+
+    def _install_compacted_history(self, result):
+        self.history = result.after_messages
+        self.latest = None
 
     def _compact_native(self):
         with self._commit_lock:
@@ -367,6 +413,9 @@ class HermesSession:
             await asyncio.to_thread(self.agent.interrupt)
 
     def close(self):
+        return asyncio.shield(self._start_close())
+
+    def _start_close(self):
         if self._closing is None:
             self.closed = True
             self._closing = asyncio.create_task(self._close())

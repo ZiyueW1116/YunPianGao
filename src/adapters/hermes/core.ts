@@ -43,6 +43,7 @@ const handlers: Record<string, (args: any) => any> = {
   },
   begin(args: { handle: string; timeoutMs: number }) { return runtime.begin(sessionID, args.handle, args.timeoutMs) },
   activate(args: { id: string }) { runtime.activate(args.id) },
+  stopWait(args: { id: string }) { runtime.stopWaits(sessionID, args.id) },
   interrupt() { runtime.onInterrupt(sessionID) },
   cancel(args: { handle: string }) { return runtime.cancel(sessionID, args.handle) },
   refresh(args: { handle?: string }) { return runtime.refresh(args.handle) },

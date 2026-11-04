@@ -18,7 +18,6 @@ class CoreBridge:
         core = Path(core) if core else Path(__file__).resolve().parents[4] / "dist/adapters/hermes/core.js"
         process = await asyncio.create_subprocess_exec(
             node, str(core), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            limit=16 * 1024 * 1024,
         )
         return cls(process, dispatch)
 
@@ -51,23 +50,34 @@ class CoreBridge:
         finally:
             self.calls.pop(ident, None)
 
+    def _receive(self, message):
+        if "reply" in message:
+            future = self.pending.get(message["reply"])
+            if future and not future.done():
+                if message.get("error"):
+                    future.set_exception(RuntimeError(message["error"]))
+                else:
+                    future.set_result(message.get("value"))
+        elif "abort" in message:
+            task = self.calls.get(message["abort"])
+            if task:
+                task.cancel()
+        else:
+            self.calls[message["id"]] = asyncio.create_task(self._dispatch(message))
+
     async def _read(self):
         try:
-            while line := await self.process.stdout.readline():
-                message = json.loads(line)
-                if "reply" in message:
-                    future = self.pending.get(message["reply"])
-                    if future and not future.done():
-                        if message.get("error"):
-                            future.set_exception(RuntimeError(message["error"]))
-                        else:
-                            future.set_result(message.get("value"))
-                elif "abort" in message:
-                    task = self.calls.get(message["abort"])
-                    if task:
-                        task.cancel()
-                else:
-                    self.calls[message["id"]] = asyncio.create_task(self._dispatch(message))
+            # 快照累积进程内结果，单条 JSON 记录可能跨越多个读取块。
+            frame = bytearray()
+            while chunk := await self.process.stdout.read(64 * 1024):
+                parts = chunk.split(b"\n")
+                for part in parts[:-1]:
+                    frame.extend(part)
+                    self._receive(json.loads(frame))
+                    frame.clear()
+                frame.extend(parts[-1])
+            if frame:
+                raise RuntimeError("Hermes 核心管道在完整记录结束前关闭。")
         finally:
             for future in self.pending.values():
                 if not future.done():

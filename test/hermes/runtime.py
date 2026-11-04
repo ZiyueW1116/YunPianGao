@@ -303,6 +303,407 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await f.close()
 
 
+    async def test_terminal_entry_requires_approval(self):
+        f = await Fixture().open("lifecycle-cli-approval")
+        process = None
+        try:
+            from tools.approval import detect_dangerous_command
+
+            marker = f.cwd / "approval-probe"
+            marker.write_text("合成审批测试", encoding="utf-8")
+            marker.chmod(0o600)
+            command = "chmod 777 approval-probe"
+            self.assertTrue(detect_dangerous_command(command)[0])
+            def choose(n):
+                if n == 1:
+                    return "start_process", {"command": command}
+                if n == 2:
+                    return "terminal", {"command": command}
+
+            f.choose = choose
+            path = f.cwd / "options.json"
+            path.write_text(json.dumps({key: value for key, value in f.options.items() if key != "session_db"}), encoding="utf-8")
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "yunpiangao_hermes", "--agent-options", str(path),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            while True:
+                line = await asyncio.wait_for(process.stdout.readline(), 10)
+                self.assertTrue(line)
+                if b"/close" in line:
+                    break
+            process.stdin.write("执行合成审批测试。\n".encode())
+            await process.stdin.drain()
+            await until(lambda: f.parent == 3)
+            await asyncio.wait_for(process.stdout.readline(), 10)
+            process.stdin.write(b"/close\n")
+            await process.stdin.drain()
+            _, errors = await process.communicate()
+            self.assertEqual(process.returncode, 0, errors.decode())
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+            tool_result = [message["content"] for message in f.calls[-1]["body"]["messages"] if message["role"] == "tool"]
+            self.assertEqual(sum("BLOCKED" in result for result in tool_result), 2, tool_result)
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            await f.close()
+
+    async def test_settled_wait_survives_input_before_parking(self):
+        f = await Fixture().open("complete")
+        began, release, admitted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        native = f.session.core.request
+        prompts = []
+
+        async def gate(method, args=None):
+            value = await native(method, args)
+            if method == "begin":
+                self.assertEqual(value["state"], "waiting")
+                began.set()
+                await release.wait()
+            if method == "input" and f.session.epoch == 2:
+                admitted.set()
+            return value
+
+        async def settled():
+            return (await f.session.snapshot())["waits"][0]["state"] == "ready"
+
+        f.session.core.request = gate
+        try:
+            prompts.append(asyncio.create_task(f.session.prompt("启动并等待合成任务。")))
+            await asyncio.wait_for(began.wait(), 5)
+            await f.release()
+            await until(settled)
+            prompts.append(asyncio.create_task(f.session.prompt("合成新输入。")))
+            await asyncio.wait_for(admitted.wait(), 5)
+            release.set()
+            await asyncio.gather(*prompts)
+            await until(lambda: f.parent == 4 and not f.session._queue.locked())
+            self.assertEqual(len(f.session.accepted), 1)
+            wait = (await f.session.snapshot())["waits"][0]
+            self.assertEqual((wait["state"], wait["reason"]), ("delivered", "succeeded"))
+            deliveries = [
+                message["content"] for call in f.calls for message in call["body"]["messages"]
+                if message["role"] == "user" and str(message.get("content", "")).startswith("云片糕等待结果")
+            ]
+            self.assertEqual(len(set(deliveries)), 1)
+            self.assertIn('"output": "DONE"', deliveries[0])
+        finally:
+            release.set()
+            await asyncio.gather(*prompts, return_exceptions=True)
+            await f.close()
+
+    async def test_rewait_child_after_native_retention(self):
+        from agent import subagent_lifecycle as lifecycle
+
+        f = await Fixture().open("child-retention")
+        original = f.choose
+        f.choose = lambda n: original(n) if n == 1 else None
+        try:
+            await f.session.prompt("启动子任务，稍后等待。")
+            child = next(iter(f.session.sources.values()))
+            handle = (await f.session.snapshot())["tasks"][0]["handle"]["id"]
+            await f.release()
+            await until(lambda: child.service.result(child.handle).ready)
+            with patch.object(lifecycle, "_TERMINAL_RETENTION_SECONDS", 0):
+                await asyncio.to_thread(f.session.tool, "start_subagent", {"prompt": "CHILD_MARKER：触发宿主过期清理。"})
+            self.assertNotIn(child.handle.subagent_id, lifecycle._REGISTRY.records)
+            f.choose = lambda n: ("wait_for", {"handle": handle, "timeout": .2}) if n == 3 else None
+            await f.session.prompt("现在等待第一个子任务。")
+            await until(lambda: f.parent == 4 and not f.session._queue.locked())
+            wait = (await f.session.snapshot())["waits"][0]
+            self.assertEqual(wait["reason"], "succeeded")
+            self.assertIn("合成子任务已完成", wait["snapshot"]["result"]["summary"])
+        finally:
+            await f.close()
+
+    async def test_cancelled_prompt_keeps_native_history(self):
+        f = await Fixture().open("input-stream")
+        try:
+            running = asyncio.create_task(f.session.prompt("CANCEL_HISTORY_MARKER"))
+            await until(f.wait_started.is_set)
+            running.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await running
+            persisted = f.db.get_messages(f.session.session_id)
+            self.assertTrue(any("CANCEL_HISTORY_MARKER" in str(m["content"]) for m in persisted))
+            installed = any("CANCEL_HISTORY_MARKER" in str(m["content"]) for m in f.session.history)
+            f.release_wait.set()
+            await f.session.prompt("FOLLOW_UP_MARKER")
+            self.assertTrue(any("CANCEL_HISTORY_MARKER" in str(m.get("content")) for m in f.calls[-1]["body"]["messages"]))
+            self.assertTrue(installed)
+        finally:
+            await f.close()
+
+    async def test_close_survives_caller_timeout(self):
+        f = await Fixture().open("lifecycle-close-timeout")
+        entered, release = asyncio.Event(), asyncio.Event()
+        native = f.session.core.request
+
+        async def gate(method, args=None):
+            if method == "snapshot":
+                entered.set()
+                await release.wait()
+            return await native(method, args)
+
+        f.session.core.request = gate
+        try:
+            closing = f.session.close()
+            await asyncio.wait_for(entered.wait(), 5)
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(closing, .01)
+            release.set()
+            await asyncio.wait_for(f.session.close(), 5)
+            self.assertTrue(f.session.agent.ypg_closed)
+            self.assertEqual(f.session.core.process.returncode, 0)
+        finally:
+            release.set()
+            if f.session._closing.cancelled():
+                await f.session._close()
+                f.db.close()
+            else:
+                await f.close()
+
+    async def test_close_before_child_executor_admission(self):
+        from agent import subagent_lifecycle as lifecycle
+
+        f = await Fixture().open("child-submit-close")
+        entered, release = threading.Event(), threading.Event()
+        native = lifecycle._EXECUTOR.submit
+
+        def gate(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            future = native(*args, **kwargs)
+            future.result(timeout=5)
+            return future
+
+        try:
+            await f.release()
+            with patch.object(lifecycle._EXECUTOR, "submit", gate):
+                running = asyncio.create_task(f.session.prompt("启动合成子 Agent。"))
+                await until(entered.is_set)
+                closing = f.session.close()
+                release.set()
+                await asyncio.gather(running, return_exceptions=True)
+                await closing
+            self.assertEqual(f.child, 0)
+            self.assertEqual((await f.session.snapshot())["tasks"], [])
+        finally:
+            release.set()
+            await f.close()
+
+    async def test_bridge_keeps_large_multibyte_snapshot_readable(self):
+        output = "😀" * 65536
+
+        async def dispatch(method, args):
+            self.assertEqual(method, "read")
+            return {"status": "succeeded", "result": {"output": output}}
+
+        core = await CoreBridge.create(dispatch)
+        try:
+            await core.request("open", {"sessionID": "合成大快照"})
+            for i in range(64):
+                await core.request("register", {"kind": "process", "executionID": str(i)})
+            await core.request("refresh")
+            state = await core.request("snapshot")
+            self.assertEqual(len(state["tasks"]), 64)
+            self.assertTrue(all(task["result"]["output"] == output for task in state["tasks"]))
+            self.assertEqual((await core.request("snapshot"))["tasks"][-1]["result"]["output"], output)
+        finally:
+            closed = await core.close(snapshot=True)
+        self.assertEqual(closed["tasks"][-1]["result"]["output"], output)
+        self.assertEqual(core.process.returncode, 0)
+
+
+    async def test_failed_parking_stops_only_its_wait(self):
+        f = await Fixture().open("complete")
+        native = f.session.agent._flush_messages_to_session_db
+        refused = threading.Event()
+
+        def reject_wait_result(messages, *args, **kwargs):
+            if not refused.is_set() and f.session.parked and any(
+                message.get("role") == "tool" and message.get("name") == "wait_for" for message in messages
+            ):
+                refused.set()
+                return False
+            return native(messages, *args, **kwargs)
+
+        try:
+            with patch.object(f.session.agent, "_flush_messages_to_session_db", reject_wait_result):
+                result = await f.session.prompt("启动并等待合成任务。")
+            self.assertTrue(refused.is_set())
+            self.assertTrue(result["failed"])
+            state = await f.session.snapshot()
+            wait = state["waits"][0]
+            self.assertEqual(state["tasks"][0]["status"], "working")
+            self.assertEqual((wait["state"], wait["reason"]), ("delivered", "interrupted"))
+            await f.release()
+
+            async def completed():
+                await f.session.core.request("refresh", {"handle": wait["handle"]["id"]})
+                return (await f.session.snapshot())["tasks"][0]["status"] == "succeeded"
+
+            await until(completed)
+            self.assertEqual((await f.session.snapshot())["waits"][0], wait)
+            self.assertEqual(f.parent, 2)
+            self.assertEqual(f.session.accepted, set())
+        finally:
+            await f.close()
+
+    async def test_zero_wait_rechecks_child_after_native_retention(self):
+        from agent import subagent_lifecycle as lifecycle
+
+        f = await Fixture().open("child-zero")
+        original = f.choose
+        f.choose = lambda n: original(n) if n == 1 else None
+        try:
+            await f.session.prompt("启动子任务，稍后复核。")
+            child = next(iter(f.session.sources.values()))
+            await f.release()
+            await until(lambda: child.service.result(child.handle).ready)
+            with patch.object(lifecycle, "_TERMINAL_RETENTION_SECONDS", 0):
+                await asyncio.to_thread(f.session.tool, "start_subagent", {"prompt": "CHILD_MARKER：触发宿主清理。"})
+            self.assertNotIn(child.handle.subagent_id, lifecycle._REGISTRY.records)
+            state = await f.session.snapshot()
+            handle = state["tasks"][0]["handle"]["id"]
+            self.assertEqual(state["tasks"][0]["status"], "working")
+            f.choose = lambda n: ("wait_for", {"handle": handle, "timeout": 0}) if n == 3 else None
+            await f.session.prompt("用零秒期限复核第一个子任务。")
+            await until(lambda: f.parent == 4 and not f.session._queue.locked())
+            wait = (await f.session.snapshot())["waits"][0]
+            self.assertEqual(wait["deadline"], wait["createdAt"])
+            self.assertEqual(wait["reason"], "succeeded")
+            self.assertIn("合成子任务已完成", wait["snapshot"]["result"]["summary"])
+        finally:
+            await f.close()
+
+    async def test_input_during_zero_wait_refresh_rejects_stale_wait(self):
+        f = await Fixture().open("complete")
+        original_choose = f.choose
+        checking, release, admitted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        native = f.session.core.request
+        prompts = []
+
+        def choose(n):
+            call = original_choose(n)
+            if n == 2:
+                return call[0], {**call[1], "timeout": 0}
+            return call
+
+        async def gate(method, args=None):
+            value = await native(method, args)
+            if method == "refresh":
+                checking.set()
+                await release.wait()
+            if method == "input" and f.session.epoch == 2:
+                admitted.set()
+            return value
+
+        f.choose = choose
+        f.session.core.request = gate
+        try:
+            prompts.append(asyncio.create_task(f.session.prompt("启动任务并执行零秒等待。")))
+            await asyncio.wait_for(checking.wait(), 5)
+            prompts.append(asyncio.create_task(f.session.prompt("替换过期的等待意图。")))
+            await asyncio.wait_for(admitted.wait(), 5)
+            release.set()
+            await asyncio.gather(*prompts)
+            self.assertEqual((await f.session.snapshot())["waits"], [])
+            self.assertEqual(f.parent, 4)
+            self.assertEqual(f.session.accepted, set())
+        finally:
+            release.set()
+            await asyncio.gather(*prompts, return_exceptions=True)
+            await f.close()
+
+    async def test_cancelled_compact_keeps_committed_history(self):
+        f = await Fixture().open("lifecycle-cancelled-compact")
+        committed, release = threading.Event(), threading.Event()
+        native = f.session._compact_native
+        operation = None
+
+        def gate():
+            result = native()
+            committed.set()
+            release.wait(5)
+            return result
+
+        def has_summary(messages):
+            return any("context summary" in str(m.get("content", "")).lower() or m.get("_compressed_summary") for m in messages)
+
+        try:
+            f.session.agent.context_compressor.tail_token_budget = 1
+            f.seeding = True
+            for _ in range(3):
+                await f.session.prompt("合成待压缩记录。" * 1000)
+            f.seeding = False
+            with patch.object(f.session, "_compact_native", gate):
+                operation = asyncio.create_task(f.session.compact())
+                await until(committed.is_set)
+                self.assertTrue(has_summary(f.db.get_messages(f.session.session_id)))
+                operation.cancel()
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await operation
+            await f.session.prompt("压缩提交后的合成追问。")
+            self.assertEqual(f.parent, 1)
+            messages = f.calls[-1]["body"]["messages"]
+            self.assertTrue(any("任务结果由结构化运行时提供" in str(m.get("content", "")) for m in messages))
+        finally:
+            release.set()
+            if operation is not None:
+                await asyncio.gather(operation, return_exceptions=True)
+            await f.close()
+
+    async def test_close_cancels_running_child_with_executor_full(self):
+        from agent import subagent_lifecycle as lifecycle
+
+        f = await Fixture().open("lifecycle-close-saturated")
+        pool = lifecycle._DaemonExecutor(max_workers=1)
+        submitted, release = threading.Event(), threading.Event()
+        native_launch, native_cancel = f.session.service.launch, f.session.service.cancel
+        children, cancelled = [], []
+        queued = None
+
+        def launch(*args, **kwargs):
+            handle = native_launch(*args, **kwargs)
+            children.append(handle)
+            if len(children) == 2:
+                submitted.set()
+                release.wait(5)
+            return handle
+
+        def cancel(handle, **kwargs):
+            result = native_cancel(handle, **kwargs)
+            cancelled.append(handle)
+            if handle == children[0]:
+                f.release_child.set()
+            return result
+
+        try:
+            with patch.object(lifecycle, "_EXECUTOR", pool), patch.object(f.session.service, "launch", launch), patch.object(f.session.service, "cancel", cancel):
+                await asyncio.to_thread(f.session.tool, "start_subagent", {"prompt": "CHILD_MARKER：占用唯一工作线程。"})
+                await until(f.child_started.is_set)
+                queued = asyncio.create_task(asyncio.to_thread(f.session.tool, "start_subagent", {"prompt": "CHILD_MARKER：在 executor 排队。"}))
+                await until(submitted.is_set)
+                closing = f.session.close()
+                release.set()
+                await asyncio.wait_for(closing, 3)
+                with self.assertRaisesRegex(RuntimeError, "未发布 handle"):
+                    await queued
+                self.assertIn(children[0], cancelled)
+                self.assertEqual(f.child, 1)
+                self.assertTrue(f.session.agent.ypg_closed)
+        finally:
+            release.set()
+            await f.release()
+            if queued is not None:
+                await asyncio.gather(queued, return_exceptions=True)
+            await f.close()
+            pool.shutdown(wait=True)
+
+
     async def test_queued_resume_preserves_input_version(self):
         f = await Fixture().open("resume-input")
         entered, release = asyncio.Event(), asyncio.Event()
@@ -606,10 +1007,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.object(f.session.agent, "interrupt", reenter):
                 first = f.session.close()
-                self.assertIs(first, f.session.close())
-                await first
-            self.assertTrue(observed)
-            self.assertTrue(all(item is first for item in observed))
+                cleanup = f.session._closing
+                await asyncio.gather(first, f.session.close())
+            self.assertEqual(len(observed), 1)
+            await observed[0]
+            self.assertIs(f.session._closing, cleanup)
         finally:
             await f.close()
 
