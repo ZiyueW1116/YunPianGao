@@ -48,7 +48,7 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 ### 任务与等待接口
 
-`register(sessionID, kind, executionID, source)` 注册具体执行，返回 `TaskHandle`。`kind` 为 `process` 或 `subagent`；`executionID` 必须关联到这次执行，不能使用可重复启动任务的名称。handle 只能由所属 session 等待或取消。
+`register(sessionID, kind, executionID, source)` 注册具体执行，返回 `TaskHandle`。`kind` 为 `process` 或 `subagent`，`executionID` 标识这一次执行。需要等宿主接纳工具结果的适配器可以用 `prepareTask(...)` 预留身份，再调用 `publish()`。发布后，所属 session 才能等待或取消该 handle。
 
 `TaskSource` 提供以下能力：
 
@@ -58,7 +58,9 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
 
-成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
+成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。注册时已知的终态立即结算。等待中的新终态以执行源报告的 `finishedAt` 为准，缺少完成时间或观测到 `input_required` 时使用观测时间。该时间达到 deadline 即按超时结算，即使定时器尚未执行。
+
+第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。晚到终态仍可在重等时读取，`input_required` 可以回到 `working`。查询失败后，runtime 会继续复核，直到得到结果或本次等待超时。
 
 `WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳状态不明或发生可重试错误时，runtime 以相同标识重试。确认宿主无法接纳时，端口返回 `discarded`。宿主回执可能触发同步关闭时，适配器在转发事件前调用 `confirmDelivery(waitID, outcome)`，先记录本次投递结果。
 
@@ -144,3 +146,9 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 ## OpenHands Software Agent SDK 1.59.0
 
 `OpenHandsSession` 是本地 Python SDK 产品入口。固定版本、工具协议、原生暂停收尾、Condenser 提交边界、跨语言管道、接续去重及生命周期契约见 [OpenHands 说明](openhands.md)。核心仍为 `scheduler.ts` 和 `wait.ts`；宿主专用桥接为 `src/adapters/openhands-core.ts`，Python 包为 `python/yunpiangao_openhands/`。没有复制核心规则或修改 OpenHands 源码。
+
+## DeepSeek Harness 0.2.2-alpha.3
+
+独立 Cordis compaction 插件复用核心调度与等待状态机。原生正常结果的 `concludeTurn()` 停轮，subprocess 与 `SubagentActivation(delivery: caller)` 提供执行来源，原生 inbox 历史保证消费后的接纳去重。空闲摘要需要固定版本宿主补丁提供 `prepareSummary` 和同步 `beforeCommit`；完整原生载荷由适配层持有，核心只保留提交资格。
+
+入口、工具、信号所有权、原生维护队列、实例失效及人工交互限制见 [DeepSeek 契约](deepseek.md)。该宿主的实测结果独立记录，不使用 Pi 或 OpenCode 测试代替。

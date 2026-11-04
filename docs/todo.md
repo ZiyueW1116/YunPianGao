@@ -24,3 +24,10 @@ Claude 固定版本、defer 的文档与实测差异、SDK/终端触发区别见
 ## OpenHands
 
 OpenHands 1.59.0 的本地 SDK 入口与边界见 [OpenHands 说明](openhands.md)。真实模型自主工具选择、跨平台进程树取消、远端 Agent Server、ACP、MCP 接管和跨重启执行恢复均未验证；同步 `run()` 的输入排队与步骤边界暂停不代表流式 steering 或即时取消。
+
+## DeepSeek 后续范围
+
+- [ ] 真实模型自主工具选择与摘要保真度对照；当前验收模型回复由替身预设。
+- [ ] Windows、Web UI、文件 HMR 和非本地 subagent provider 的真实入口验收。
+- [ ] 上游正式提供无锁摘要准备及同步提交复核后，替换固定版本补丁并重跑回放与竞争场景。
+- [ ] 若宿主开放子 Agent 人工交互，再依据真实请求、查询与解除协议接入 `input_required`；本地委派当前固定权限，审批直接拒绝，人工问答受限。

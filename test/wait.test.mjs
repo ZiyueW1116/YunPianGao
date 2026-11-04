@@ -89,6 +89,29 @@ test("完成与超时竞争只有一个接续，已结束等待不被迟到通�
   }
 })
 
+test("期限已过而定时器尚未运行时，按任务完成时间或观测时间结算", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1000 })
+  for (const [offset, reason] of [[-1, "succeeded"], [0, "timeout"], [1, "timeout"], [undefined, "timeout"]]) {
+    const f = fixture()
+    try {
+      const wait = f.runtime.begin("parent", f.handle.id, 100)
+      f.runtime.activate(wait.id)
+      t.mock.timers.setTime(wait.deadline + 10)
+      f.change({ status: "succeeded", finishedAt: offset === undefined ? undefined : wait.deadline + offset })
+      await f.runtime.refresh()
+      assert.deepEqual(f.delivered.map((record) => record.reason), [reason])
+      assert.equal(f.runtime.snapshot("parent").tasks[0].status, "succeeded")
+      assert.equal(f.counts().cancels, 0)
+      if (reason === "timeout") {
+        assert.equal(f.delivered[0].snapshot.status, "working")
+        const next = f.runtime.begin("parent", f.handle.id, 100)
+        assert.equal(next.reason, "succeeded")
+        assert.deepEqual(next.handle, wait.handle)
+      }
+    } finally { await f.runtime.close() }
+  }
+})
+
 test("用户输入或停止等待不取消任务，不另发模型接续", async () => {
   for (const method of ["onInput", "onInterrupt"]) {
     const f = fixture()
