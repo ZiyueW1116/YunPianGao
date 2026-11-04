@@ -2,7 +2,9 @@
 
 ## 两层依赖
 
-核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
+核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode、Claude 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
+
+Codex 0.166.0 的部分接入只复用等待核心，契约见 [Codex 实验性入口](codex.md)。它没有接入摘要调度器，也没有完整云片糕语义保证。
 
 核心保留已有调度器和等待状态机；不变的是语义与依赖方向，代码可随已验证契约修改。没有通用 Harness 基类、动态注册平台、多层工厂或独立持久化任务框架。
 
@@ -56,11 +58,11 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
 
-成功、失败、取消、介入与超时竞争同一个状态转换：`waiting → ready → delivered`。第一次结束原因确定后，不再被迟到的事件或超时覆盖。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
+成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
 
-`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳失败或响应丢失时，runtime 以相同标识重试；端口不能每次创建一条新输入。状态通知本身不能替代接续。
+`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳状态不明或发生可重试错误时，runtime 以相同标识重试。确认宿主无法接纳时，端口返回 `discarded`。宿主回执可能触发同步关闭时，适配器在转发事件前调用 `confirmDelivery(waitID, outcome)`，先记录本次投递结果。
 
-`onInput(sessionID)` 或 `onInterrupt(sessionID)` 结束尚未完成的等待，分别记录 `user_input` 或 `interrupted`，不再调用 `resume`；输入与中断的后续执行由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
+`onInput(sessionID)` 以 `user_input` 结束尚未结算的等待。默认由宿主管理后续执行。仍持有原生待回包工具的适配器可启用 `resumeOnInput`，通过 `resume` 回包并确认投递。`onInterrupt(sessionID)` 以 `interrupted` 结束等待，后续执行始终由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
 
 `stopWaits(sessionID, waitID?)` 强制结束该 owner 已注册的等待，停止重试并向在途投递传递取消信号，不取消底层任务；指定 `waitID` 时只收尾该次等待。已经确定的结束原因保留，尚未结束的等待记录为 `interrupted`。删除 owner、取消子任务时停止该 owner 的全部等待；停车失败只收尾本次等待，不能影响后来注册的等待。已经被宿主接纳的输入不能撤回。
 
@@ -132,6 +134,16 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 - [原生后台 subagent](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/subagent-completion.ts) 和 [shell](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/tool/plugin/shell.ts) 自带通知。插件使用独立启动入口避免重复通知，尚未适配这些原生标识。
 
 等待时 session 显示为中断后的空闲状态，历史中的 `wait_for` 工具被记为 interrupted；接续通过新的 Agent 执行处理 synthetic 结果，不恢复任意工具调用栈。用户输入结束等待，不取消任务。事件流断开后，空闲压缩沿用停止调度的行为；任务等待继续查询并重连事件订阅。跨重启重放、原生任务接管和 Windows 进程组取消不在已验证范围内。
+
+## Claude Code 2.1.317 / Agent SDK 0.3.317
+
+`createClaudeQuery` 加载正式 Mods；终端使用构建后的 `dist/claude-mod`。`scheduler.ts`、`wait.ts` 不导入 Claude SDK。构建将相同核心编译结果放进插件目录，用正式 `clock.after` 和 crypto 映射环境依赖。
+
+原生 Bash / agent.spawn 提供执行对象，Mods 轮边界停放，普通 prompt.submit 接续；session.compact 返回消息列表并由宿主持久化。SDK close 先 interrupt 再关闭原生进程。创建与取消、权限介入、输入时序、摘要资格、热重载和原生通知缺口的完整契约见 [Claude 使用说明](claude.md)。
+
+## OpenHands Software Agent SDK 1.59.0
+
+`OpenHandsSession` 是本地 Python SDK 产品入口。固定版本、工具协议、原生暂停收尾、Condenser 提交边界、跨语言管道、接续去重及生命周期契约见 [OpenHands 说明](openhands.md)。核心仍为 `scheduler.ts` 和 `wait.ts`；宿主专用桥接为 `src/adapters/openhands-core.ts`，Python 包为 `python/yunpiangao_openhands/`。没有复制核心规则或修改 OpenHands 源码。
 
 ## Hermes Agent v0.22.6
 

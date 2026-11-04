@@ -24,33 +24,51 @@
     "./pi": {
       "types": "./dist/adapters/pi.d.ts",
       "import": "./dist/adapters/pi.js"
+    },
+    "./claude": {
+      "types": "./dist/adapters/claude.d.ts",
+      "import": "./dist/adapters/claude.js"
+    },
+    "./codex": {
+      "types": "./dist/adapters/codex.d.ts",
+      "import": "./dist/adapters/codex.js"
     }
   },
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/**/*.py",
+    "dist/claude-mod",
     "server.js",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "examples",
+    "python/pyproject.toml",
+    "python/requirements.lock",
+    "python/yunpiangao_openhands/*.py"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy_hermes.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs && node scripts/copy_hermes.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build",
     "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
-    "test:hermes": "npm run build && python3 scripts/test_hermes.py"
+    "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs",
+    "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "test:hermes": "npm run build && python3 scripts/test_hermes.py",
+    "test:openhands": "npm run build && node scripts/test_openhands.mjs",
+    "install:codex": "node scripts/install-codex.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@opencode/plugin": "2.1.4",
-    "@earendil-works/pi-coding-agent": "1.5.0"
+    "@anthropic-ai/claude-agent-sdk": "0.3.317"
   },
   "peerDependenciesMeta": {
     "@opencode/plugin": {
@@ -58,9 +76,13 @@
     },
     "@earendil-works/pi-coding-agent": {
       "optional": true
+    },
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.317",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@opencode/plugin": "2.1.4",
     "@types/node": "22.19.11",

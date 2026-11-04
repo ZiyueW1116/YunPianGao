@@ -5,8 +5,8 @@ from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
 ROOT_FILES={'README.md','LICENSE','package.json','package-lock.json','tsconfig.json','.gitignore','server.js'}
-SOURCE_DIRS={'src','test','docs','scripts','.github'}
-SUFFIXES={'.ts','.js','.mjs','.py','.md','.html','.json','.yaml','.yml','.txt','.patch'}
+SOURCE_DIRS={'src','test','docs','scripts','.github','examples','python'}
+SUFFIXES={'.ts','.js','.mjs','.py','.md','.html','.json','.yaml','.yml','.txt','.toml','.lock','.patch'}
 SYNTHETIC_VALUES={'synthetic-only','fixture-only','test-only','redacted','[redacted]'}
 PRIVATE=[re.compile('/'+'mnt/cpfs/'),re.compile('/'+'Users/'),re.compile('/'+'root/'),
          re.compile(r'ses_[A-Za-z0-9]{20,}')]
@@ -16,7 +16,7 @@ EMAIL=re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 def inspect(name,data,package=False):
     errors=[];path=Path(name)
     if path.is_absolute() or '..' in path.parts:return [(name,0,'归档路径越界')]
-    allowed=path.name in ROOT_FILES if len(path.parts)==1 else path.parts[0] in ({'dist','docs'} if package else SOURCE_DIRS)
+    allowed=path.name in ROOT_FILES if len(path.parts)==1 else path.parts[0] in ({'dist','docs','examples','python'} if package else SOURCE_DIRS)
     if not allowed:errors.append((name,0,'文件不在公开范围'))
     if name not in ROOT_FILES and path.suffix not in SUFFIXES:errors.append((name,0,'不允许的文件类型'))
     if len(data)>512*1024:errors.append((name,0,'文件超过公开包大小边界'))

@@ -6,10 +6,24 @@
 - [ ] 在 Windows 验证独立取消及进程树行为；当前 POSIX 使用进程组 SIGTERM，Windows 分支只向直接进程发送 SIGTERM。
 - [ ] 如需 Pi CLI 扩展入口，先确认宿主提供正常工具轮停放的公开扩展契约。1.5.0 的 SDK 有 `finishTurn`，普通扩展回调没有对应 `end` 返回值；不使用阻止工具或中断补丁代替。
 - [ ] 如需子 Agent 扩展交互，定义 Pi UI 请求的归属、查询与解除契约，并验证 `input_required` 的真实接续。当前子 session 禁用扩展，不转发 UI 或模拟 OpenCode 的权限与表单协议。
+- [ ] Codex 完整摘要：为固定宿主版本增加经过真实 app-server 回归的摘要快照、生成和原子复核提交接口；公开 `thread/compact/start` 不接收预备摘要，`thread/inject_items` 只追加历史。实验性 Codex 入口不触发空闲摘要。
+- [ ] Codex 等待期压缩：提供能够保留正常等待身份、输入队列和结构化依赖的原生控制边界。0.166.0 的压缩会先中断待回包工具；实验性入口在活跃轮次拒绝 compact。尚未交付宿主补丁。
 
 首版 handle、期限、恢复原因与结果只在进程内保存。跨重启恢复、持久化任务框架、已有原生任务接管、复用既有子 session 和嵌套云片糕任务均不在当前支持范围；会话记录持久化不等于执行句柄可恢复。
 
 OpenCode 2.1.4 的公开接口缺口与兼容边界继续记录在[OpenCode 契约](adapters.md#opencode-214)，不作为 Pi 适配的替代证明。
+
+## Claude
+
+- [ ] 取得原生 Bash 完整终态查询契约，覆盖宿主完全遗漏终态通知的补偿；当前缓存查询只能补偿 runtime 订阅通知遗漏。
+- [ ] 以真实模型验证自主工具选择与摘要保真度，并验证 Windows、其他架构、远程客户端和多模态内容。当前正式运行证据来自 macOS arm64 和 Linux x64 的真实宿主与预设模型替身。
+- [ ] 其他插件在最终复核之后改写压缩结果的组合行为需要对应的原子提交协议；当前不提供跨插件事务。
+
+Claude 固定版本、defer 的文档与实测差异、SDK/终端触发区别见 [Claude 使用说明](claude.md)。
+
+## OpenHands
+
+OpenHands 1.59.0 的本地 SDK 入口与边界见 [OpenHands 说明](openhands.md)。真实模型自主工具选择、跨平台进程树取消、远端 Agent Server、ACP、MCP 接管和跨重启执行恢复均未验证；同步 `run()` 的输入排队与步骤边界暂停不代表流式 steering 或即时取消。
 
 ## Hermes 待验证范围
 
