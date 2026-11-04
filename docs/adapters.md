@@ -60,9 +60,9 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
 
-`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳状态不明或发生可重试错误时，runtime 以相同标识重试。确认宿主无法接纳时，端口返回 `discarded`。仍持有原生待回包工具的适配器可启用 `resumeOnInput`，让用户输入结束等待时也经过同一投递确认。
+`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳状态不明或发生可重试错误时，runtime 以相同标识重试。确认宿主无法接纳时，端口返回 `discarded`。宿主回执可能触发同步关闭时，适配器在转发事件前调用 `confirmDelivery(waitID, outcome)`，先记录本次投递结果。
 
-`onInput(sessionID)` 或 `onInterrupt(sessionID)` 结束尚未完成的等待，分别记录 `user_input` 或 `interrupted`，不再调用 `resume`；输入与中断的后续执行由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
+`onInput(sessionID)` 以 `user_input` 结束尚未结算的等待。默认由宿主管理后续执行。仍持有原生待回包工具的适配器可启用 `resumeOnInput`，通过 `resume` 回包并确认投递。`onInterrupt(sessionID)` 以 `interrupted` 结束等待，后续执行始终由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
 
 `stopWaits(sessionID, waitID?)` 强制结束该 owner 已注册的等待，停止重试并向在途投递传递取消信号，不取消底层任务；指定 `waitID` 时只收尾该次等待。已经确定的结束原因保留，尚未结束的等待记录为 `interrupted`。删除 owner、取消子任务时停止该 owner 的全部等待；停车失败只收尾本次等待，不能影响后来注册的等待。已经被宿主接纳的输入不能撤回。
 

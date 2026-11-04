@@ -134,7 +134,14 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
       const key = `${pending.turnID}:${pending.callID}`
       let outcome: "delivered" | "discarded" | undefined
       let wake: (() => void) | undefined
-      acknowledgements.set(key, (value) => { outcome ??= value; wake?.() })
+      const confirm = (value: "delivered" | "discarded") => {
+        if (outcome) return
+        outcome = value
+        runtime.confirmDelivery(record.id, value)
+        parked.delete(record.id)
+        wake?.()
+      }
+      acknowledgements.set(key, confirm)
       try {
         if (!pending.replied) {
           rpc.respond(pending.id, output({ wait: record, runtime: runtime.snapshot(owner) }))
@@ -154,10 +161,9 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
           if (outcome) break
           const turns = await readTurns(owner, signal)
           const history = turns.find((item) => item.id === pending.turnID)
-          outcome ??= toolOutcome(history?.items?.find((item: any) => item.id === pending.callID))
+          const observed = toolOutcome(history?.items?.find((item: any) => item.id === pending.callID))
+          if (observed) confirm(observed)
         }
-        parked.delete(record.id)
-        if (outcome === "discarded") return outcome
       } finally { acknowledgements.delete(key) }
     },
     onError: report,

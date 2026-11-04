@@ -65,6 +65,10 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
   const terminal = (snapshot: TaskSnapshot) => ["succeeded", "failed", "cancelled"].includes(snapshot.status)
   const copy = <T>(value: T): T => structuredClone(value)
 
+  const confirmDelivery = (waitID: string, outcome: "delivered" | "discarded") => {
+    const wait = waits.get(waitID)
+    if (wait?.sending && wait.record.state === "ready") wait.record.state = outcome
+  }
   const deliver = (wait: Waiting) => {
     if (closed || !wait.active || wait.sending || wait.record.state !== "ready") return
     if (wait.record.reason === "interrupted" || (wait.record.reason === "user_input" && !options.resumeOnInput)) {
@@ -79,7 +83,7 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       signal.throwIfAborted()
       return port.resume(copy(wait.record), signal)
     }).then((outcome) => {
-      if (wait.record.state === "ready") wait.record.state = outcome === "discarded" ? outcome : "delivered"
+      confirmDelivery(wait.record.id, outcome === "discarded" ? outcome : "delivered")
     }).catch((error) => { if (wait.record.state === "ready") report(error) }).finally(() => {
       wait.delivery = undefined
       wait.sending = false
@@ -150,6 +154,8 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       wait.active = true
       deliver(wait)
     },
+    /** 在向外转发宿主回执前同步记录投递结果，防止重入关闭覆盖已确认状态。 */
+    confirmDelivery,
     onInput(sessionID: string) { endSessionWait(sessionID, "user_input") },
     onInterrupt(sessionID: string) { endSessionWait(sessionID, "interrupted") },
     /** 停止已注册等待与本地投递；指定 waitID 时只收尾该次等待，不取消任务。 */

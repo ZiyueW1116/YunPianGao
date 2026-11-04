@@ -425,6 +425,33 @@ for (const omitFailureEvent of [false, true]) {
   })
 }
 
+test("Codex 真实 app-server：成功回执先于同步 close 时保留接纳状态", { skip: !binary, timeout: 30000 }, async () => {
+  const f = await fixture("complete")
+  try {
+    const original = f.options.onEvent
+    let receipt, stateAtReceipt, closing
+    f.options.onEvent = (message) => {
+      original(message)
+      if (message.method !== "item/completed" || message.params.threadId !== f.threadId) return
+      const item = message.params.item
+      if (item.type !== "dynamicToolCall" || item.tool !== "wait_for" || item.status !== "completed" || item.success !== true) return
+      receipt = item
+      stateAtReceipt = f.snapshot().waits[0].state
+      closing = f.closeAdapter()
+    }
+    await f.prompt("启动任务并等待。")
+    await until(() => f.snapshot().waits.length === 1)
+    await f.release()
+    await until(() => closing !== undefined)
+    await closing
+    const wait = f.snapshot().waits[0]
+    assert.equal(JSON.parse(receipt.contentItems[0].text).wait.id, wait.id)
+    assert.equal(wait.reason, "succeeded")
+    assert.equal(wait.state, "delivered")
+    assert.equal(stateAtReceipt, "delivered")
+  } finally { await f.close() }
+})
+
 test("Codex 真实 app-server：遗漏完成通知后通过原生读取确认工具已接纳", { skip: !binary, timeout: 30000 }, async () => {
   const native = CodexRpc.prototype.subscribe
   CodexRpc.prototype.subscribe = function(listener) {
