@@ -1,0 +1,87 @@
+diff --git a/packages/compaction/compaction-basic/src/index.ts b/packages/compaction/compaction-basic/src/index.ts
+index 096fa72f..25e2e1da 100644
+--- a/packages/compaction/compaction-basic/src/index.ts
++++ b/packages/compaction/compaction-basic/src/index.ts
+@@ -26,6 +26,7 @@ import {
+   assertNoActiveCompaction,
+   compactSurfaceRegion,
+   selectCompactableRange,
++  buildSummarizationInput,
+ } from './region.ts'
+ import { summarizeWithLlm } from './summarizer.ts'
+ import type { SummarizationInput, SummaryResult } from './summarizer.ts'
+@@ -35,6 +36,8 @@ import type {
+   ResolvedConfig,
+ } from './types.ts'
+
++export type { SummarizationInput, SummaryResult } from './summarizer.ts'
++
+ export type {
+   BasicCompactionConfig,
+   CompactionPolicyConfig,
+@@ -257,6 +260,28 @@ export class BasicCompactionEngine extends CompactionEngine {
+     })
+   }
+
++  /**
++   * 在不写入压缩标记或占用维护锁的情况下准备原生摘要。
++   * @param agent - 摘要所属的 Agent。
++   * @param signal - 本次生成的取消信号。
++   * @returns 原生回放输入及完整摘要结果；没有可压缩范围时返回 null。
++   */
++  async prepareSummary(agent: Agent, signal?: AbortSignal): Promise<{ input: SummarizationInput; result: SummaryResult } | null> {
++    signal?.throwIfAborted()
++    const range = selectCompactableRange(agent.session, this.ctx.tokenMeter.measure(agent.session), 0)
++    if (range === null) return null
++    const nodes = agent.session.surface.nodes
++    const input = buildSummarizationInput(agent.session, nodes.slice(nodes.indexOf(range.start), nodes.indexOf(range.end) + 1))
++    return { input, result: await this.summarize(input, agent, signal) }
++  }
++
++  /**
++   * 在原生稳定性检查后、同步写入替换前复核摘要；抛错会保留原历史。
++   * @param input - 本次原生替换所摘要的回放输入。
++   * @param agent - 本次替换所属的 Agent。
++   */
++  protected beforeCommit(_input: SummarizationInput, _agent: Agent): void {}
++
+   /**
+    * Summarize the replayed conversation region through a direct one-shot
+    * `ctx.llm.stream()` call whose prefix reuses the conversation's own system
+@@ -462,6 +487,7 @@ export class BasicCompactionEngine extends CompactionEngine {
+   private regionDependencies(): Parameters<typeof compactSurfaceRegion>[0] {
+     return {
+       meter: this.ctx.tokenMeter,
++      beforeCommit: (input, agent) => this.beforeCommit(input, agent),
+       summarize: (input, owner, abort) => this.summarize(input, owner, abort),
+       recover: (error, agent, sourceEventSeqs, signal) => this.ctx.waterfall('compaction/summary-error', {
+         session: agent.session,
+diff --git a/packages/compaction/compaction-basic/src/region.ts b/packages/compaction/compaction-basic/src/region.ts
+index 7b3d77d2..bc2a4ef3 100644
+--- a/packages/compaction/compaction-basic/src/region.ts
++++ b/packages/compaction/compaction-basic/src/region.ts
+@@ -24,6 +24,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import { frameSummary } from './summarizer.ts'
+ import type { SummarizationInput, SummaryResult } from './summarizer.ts'
+ interface RegionDependencies {
++  beforeCommit?(input: SummarizationInput, agent: Agent): void
+   readonly meter: TokenMeter
+   summarize(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult>
+   recover(error: unknown, agent: Agent, sourceEventSeqs: readonly SessionSeq[], signal?: AbortSignal): boolean
+@@ -231,6 +232,7 @@ export async function compactSurfaceRegion(
+     )
+     if (options.owner === null) signal?.throwIfAborted()
+     assertStable(dependencies, session, summarized)
++    dependencies.beforeCommit?.(summarized.input, agent)
+     stage = 'commit'
+     const pending = commitCompactionBody(session, startEvent, summarized)
+     closing = true
+@@ -541,7 +543,7 @@ function completeCompaction(
+  * @param shadowedSeqs - the surface-node seqs, in order, being compacted.
+  * @returns the replayed conversation prefix to condense.
+  */
+-function buildSummarizationInput(
++export function buildSummarizationInput(
+   session: Session,
+   shadowedSeqs: readonly SessionSeq[],
+ ): SummarizationInput {
