@@ -78,6 +78,9 @@ class HermesSession:
         self._owned_db = None
         self.history = []
         self.epoch = self.model_epoch = 0
+        self._turn_stop = None
+        self._native_turn = None
+        self._native_turn_lock = threading.Lock()
         self.parked = None
         self.committing = False
         self.candidate = None
@@ -128,7 +131,7 @@ class HermesSession:
                 self.agent = await creation
                 raise
             from agent.turn_tool_round import RUNTIME_BOUNDARY_CONTRACT
-            if RUNTIME_BOUNDARY_CONTRACT != 2:
+            if RUNTIME_BOUNDARY_CONTRACT != 3:
                 raise RuntimeError("Hermes 宿主补丁版本不匹配。")
             self.agent.ypg_owner = self
             self.session_id = self.agent.session_id
@@ -187,7 +190,7 @@ class HermesSession:
                         ("protect_first_n", "protect_last_n", "tail_token_budget", "summary_target_ratio", "max_summary_tokens", "summary_model", "_previous_summary")}])
 
     def _boundary(self, messages):
-        if self.parked and not self.closed:
+        if self.parked and not self.closed and not self._turn_stop.is_set():
             # 注册后的结算由核心决定；新输入只能结束尚未结算的等待。
             return "本轮已交还运行时，任务结果、期限或用户输入将驱动后续处理。"
         return None
@@ -219,7 +222,11 @@ class HermesSession:
             elif name == "wait_for":
                 if self.parked:
                     raise RuntimeError("同一轮只能注册一次等待。")
-                if self.model_epoch != self.epoch:
+                stop = self._turn_stop
+                if stop is None or stop.is_set():
+                    return {"reason": "interrupted"}
+                version = self.model_epoch
+                if version != self.epoch:
                     return {"reason": "user_input"}
                 timeout = args.get("timeout", 600)
                 if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 <= timeout <= 2147483:
@@ -227,10 +234,16 @@ class HermesSession:
                 if timeout == 0:
                     await self.core.request("refresh", {"handle": args["handle"]})
                     self._open()
-                    if self.model_epoch != self.epoch:
+                    if stop is not self._turn_stop or stop.is_set():
+                        return {"reason": "interrupted"}
+                    if version != self.epoch:
                         return {"reason": "user_input"}
                 record = await self.core.request("begin", {"handle": args["handle"], "timeoutMs": math.ceil(timeout * 1000)})
-                self.wait_versions[record["id"]] = self.model_epoch
+                if stop is not self._turn_stop or stop.is_set():
+                    if not self.closed:
+                        await self.core.request("stopWait", {"id": record["id"]})
+                    return {"reason": "interrupted"}
+                self.wait_versions[record["id"]] = version
                 self.parked = record["id"]
                 return record
             elif name == "cancel_task":
@@ -272,6 +285,7 @@ class HermesSession:
 
     async def _run_turn(self, text, version):
         self.model_epoch = version
+        stop = self._turn_stop = threading.Event()
         self.parked = None
         self.latest = None
         try:
@@ -281,14 +295,12 @@ class HermesSession:
                             "waits": [{key: value for key, value in wait.items() if key != "snapshot"} for wait in state["waits"]]}
             if dependencies["tasks"]:
                 text += "\n云片糕结构化依赖（普通运行时数据）：\n" + json.dumps(dependencies, ensure_ascii=False)
-            result = await self._native(_with_approval_gate, self.agent.run_conversation, text,
-                                        conversation_history=self.history, task_id=self.session_id,
-                                        on_result=self._install_history, interrupt_on_cancel=True)
+            result = await self._native(self._run_native_turn, stop, text, on_result=self._install_history, cancel_turn=stop)
             if not self.closed:
-                if self.parked and result.get("turn_exit_reason") == "runtime_parked":
+                if self.parked and result.get("turn_exit_reason") == "runtime_parked" and not stop.is_set():
                     await self.core.request("activate", {"id": self.parked})
                     self.parked = None
-                elif result.get("completed") and not result.get("failed") and not result.get("interrupted"):
+                elif not stop.is_set() and result.get("completed") and not result.get("failed") and not result.get("interrupted"):
                     self.latest = {"messageID": digest(self.history), "tokens": self.agent.context_compressor.last_total_tokens}
                 phase = "interrupted" if result.get("interrupted") else "failed" if result.get("failed") else "succeeded"
                 await self.core.request("execution", {"phase": phase})
@@ -300,9 +312,30 @@ class HermesSession:
                 await self.core.request("execution", {"phase": "failed"})
             raise
         finally:
+            self._turn_stop = None
             parked, self.parked = self.parked, None
             if parked and not self.closed:
                 await self.core.request("stopWait", {"id": parked})
+
+    def _run_native_turn(self, stop, text):
+        with self._native_turn_lock:
+            self._native_turn = stop
+        try:
+            if stop.is_set():
+                self._interrupt_native_turn(stop)
+            return _with_approval_gate(self.agent.run_conversation, text,
+                                       conversation_history=self.history, task_id=self.session_id)
+        finally:
+            # 同一把锁保证迟到的中断只能作用于这一轮，并在下一轮接管前清掉宿主信号。
+            with self._native_turn_lock:
+                self._native_turn = None
+                if stop.is_set():
+                    self.agent.clear_interrupt()
+
+    def _interrupt_native_turn(self, stop):
+        with self._native_turn_lock:
+            if self._native_turn is stop:
+                self.agent.interrupt()
 
     def _install_history(self, result):
         self.history = result["messages"]
@@ -332,7 +365,7 @@ class HermesSession:
         if not task.cancelled() and task.exception() is not None:
             self.errors.append(task.exception())
 
-    async def _native(self, function, *args, cancel_event=None, on_result=None, interrupt_on_cancel=False, **kwargs):
+    async def _native(self, function, *args, cancel_event=None, on_result=None, cancel_turn=None, **kwargs):
         async def run():
             result = await asyncio.to_thread(function, *args, **kwargs)
             if on_result is not None:
@@ -348,8 +381,9 @@ class HermesSession:
             cleanup = [task]
             if cancel_event is not None:
                 cancel_event.set()
-            elif interrupt_on_cancel and not task.done():
-                cleanup.append(asyncio.create_task(asyncio.to_thread(self.agent.interrupt)))
+            elif cancel_turn is not None and not task.done():
+                cancel_turn.set()
+                cleanup.append(asyncio.create_task(asyncio.to_thread(self._interrupt_native_turn, cancel_turn)))
             draining = asyncio.gather(*cleanup, return_exceptions=True)
             while not draining.done():
                 try:
@@ -408,9 +442,12 @@ class HermesSession:
 
     async def interrupt(self):
         self._open()
+        stop = self._turn_stop
+        if stop is not None:
+            stop.set()
         await self.core.request("interrupt")
-        if self._queue.locked():
-            await asyncio.to_thread(self.agent.interrupt)
+        if stop is not None:
+            await asyncio.to_thread(self._interrupt_native_turn, stop)
 
     def close(self):
         return asyncio.shield(self._start_close())

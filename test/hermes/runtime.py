@@ -704,6 +704,160 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             pool.shutdown(wait=True)
 
 
+    async def test_interrupt_during_zero_wait_refresh_stops_old_turn(self):
+        f = await Fixture().open("complete")
+        original_choose = f.choose
+        checking, release = asyncio.Event(), asyncio.Event()
+        native = f.session.core.request
+
+        def choose(n):
+            if n == 2:
+                name, args = original_choose(n)
+                return name, {**args, "timeout": 0}
+            return original_choose(n)
+
+        async def gate(method, args=None):
+            value = await native(method, args)
+            if method == "refresh":
+                checking.set()
+                await release.wait()
+            return value
+
+        f.choose = choose
+        f.session.core.request = gate
+        prompt = asyncio.create_task(f.session.prompt("启动任务并执行零秒等待。"))
+        try:
+            await asyncio.wait_for(checking.wait(), 5)
+            await f.session.interrupt()
+            release.set()
+            await prompt
+            self.assertEqual((await f.session.snapshot())["waits"], [])
+            self.assertEqual(f.session.accepted, set())
+            self.assertEqual(f.parent, 2)
+            result = await f.session.prompt("中断后的新问题。")
+            self.assertTrue(result["completed"])
+            self.assertEqual(f.parent, 3)
+        finally:
+            release.set()
+            await asyncio.gather(prompt, return_exceptions=True)
+            await f.close()
+
+    async def test_interrupt_wait_during_compact_preserves_next_prompt(self):
+        f = await Fixture().open("compact")
+        committed, release = threading.Event(), threading.Event()
+        native = f.session._compact_native
+        operation = None
+
+        def gate():
+            result = native()
+            committed.set()
+            release.wait(5)
+            return result
+
+        try:
+            f.session.agent.context_compressor.tail_token_budget = 1
+            f.seeding = True
+            for _ in range(3):
+                await f.session.prompt("合成待压缩记录。" * 1000)
+            f.seeding = False
+            parked = await f.session.prompt("启动后台任务并停放等待。")
+            self.assertEqual(parked["turn_exit_reason"], "runtime_parked")
+            with patch.object(f.session, "_compact_native", gate):
+                operation = asyncio.create_task(f.session.compact())
+                await until(committed.is_set)
+                await f.session.interrupt()
+                release.set()
+                self.assertEqual((await operation)["status"], "compressed")
+            state = await f.session.snapshot()
+            self.assertEqual(state["waits"][0]["reason"], "interrupted")
+            self.assertEqual(state["tasks"][0]["status"], "working")
+            self.assertEqual(f.session.accepted, set())
+            result = await f.session.prompt("压缩完成后的追问。")
+            self.assertTrue(result["completed"])
+            self.assertEqual(f.parent, 3)
+            messages = f.calls[-1]["body"]["messages"]
+            self.assertTrue(any("任务结果由结构化运行时提供" in str(m.get("content", "")) for m in messages))
+        finally:
+            release.set()
+            if operation is not None:
+                await asyncio.gather(operation, return_exceptions=True)
+            await f.close()
+
+    async def test_late_native_interrupt_cannot_reach_next_turn(self):
+        f = await Fixture().open("lifecycle-late-interrupt")
+        returned, release = threading.Event(), threading.Event()
+        native = f.session.agent.run_conversation
+        prompt = None
+
+        def gate(*args, **kwargs):
+            result = native(*args, **kwargs)
+            if not returned.is_set():
+                returned.set()
+                release.wait(5)
+            return result
+
+        try:
+            with patch.object(f.session.agent, "run_conversation", gate):
+                prompt = asyncio.create_task(f.session.prompt("第一个合成问题。"))
+                await until(returned.is_set)
+                await f.session.interrupt()
+                release.set()
+                self.assertTrue((await prompt)["completed"])
+                self.assertTrue((await f.session.prompt("下一条独立问题。"))["completed"])
+            self.assertEqual(f.parent, 2)
+        finally:
+            release.set()
+            if prompt is not None:
+                await asyncio.gather(prompt, return_exceptions=True)
+            await f.close()
+
+    async def test_close_cancels_queued_child_while_other_session_owns_executor(self):
+        from agent import subagent_lifecycle as lifecycle
+        from tools import delegate_tool
+
+        f = await Fixture().open("lifecycle-shared-executor")
+        other = None
+        pool = lifecycle._DaemonExecutor(max_workers=1)
+        cleaning, release = threading.Event(), threading.Event()
+        native_close = delegate_tool._close_child
+
+        try:
+            other = await create_hermes_session(f.options)
+            with patch.object(lifecycle, "_EXECUTOR", pool):
+                await asyncio.to_thread(other.tool, "start_subagent", {"prompt": "CHILD_MARKER：占用共享 executor。"})
+                await until(f.child_started.is_set)
+                foreign = next(iter(other.sources.values()))
+                await asyncio.to_thread(f.session.tool, "start_subagent", {"prompt": "CHILD_MARKER：当前会话的排队任务。"})
+                queued = next(iter(f.session.sources.values()))
+                queued_agent = queued.service._record(queued.handle).agent
+
+                def gate(child, message):
+                    if child is queued_agent:
+                        cleaning.set()
+                        release.wait(5)
+                    return native_close(child, message)
+
+                with patch.object(delegate_tool, "_close_child", gate):
+                    closing = f.session.close()
+                    await until(cleaning.is_set)
+                    waiting = await asyncio.to_thread(queued.service.wait, queued.handle, timeout_seconds=.02)
+                    self.assertTrue(waiting.timed_out)
+                    self.assertFalse(waiting.completed)
+                    release.set()
+                    await asyncio.wait_for(closing, 3)
+                self.assertEqual(queued.read()["status"], "cancelled")
+                self.assertEqual(foreign.read()["status"], "working")
+                self.assertEqual(f.child, 1)
+                self.assertTrue(f.session.agent.ypg_closed)
+        finally:
+            release.set()
+            await f.release()
+            await f.close()
+            if other is not None:
+                await other.close()
+            pool.shutdown(wait=True)
+
+
     async def test_queued_resume_preserves_input_version(self):
         f = await Fixture().open("resume-input")
         entered, release = asyncio.Event(), asyncio.Event()

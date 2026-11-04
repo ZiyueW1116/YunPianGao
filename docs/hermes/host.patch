@@ -1,16 +1,21 @@
 diff --git a/agent/subagent_lifecycle.py b/agent/subagent_lifecycle.py
-index 65865471..1ba3a8ab 100644
+index 65865471..c5f7bdb6 100644
 --- a/agent/subagent_lifecycle.py
 +++ b/agent/subagent_lifecycle.py
+@@ -19 +19 @@ from contextlib import contextmanager
+-from concurrent.futures import Future, TimeoutError
++from concurrent.futures import CancelledError, Future, TimeoutError
 @@ -61,0 +62 @@ class SubagentLaunchRequest:
 +    independent: bool = False
-@@ -275,0 +277,2 @@ class SubagentLifecycleService:
+@@ -143,0 +145 @@ class _Record:
++    queued_cancel_done: Optional[threading.Event] = None
+@@ -275,0 +278,2 @@ class SubagentLifecycleService:
 +        # 独立执行的结果由创建它的 service 持有，原生全局保留期不影响该 owner。
 +        self._independent_records: dict[str, _Record] = {}
-@@ -277 +280 @@ class SubagentLifecycleService:
+@@ -277 +281 @@ class SubagentLifecycleService:
 -    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any]) -> SubagentHandle:
 +    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any], *, cancel_check: Optional[Callable[[], bool]] = None) -> SubagentHandle:
-@@ -309,2 +312,5 @@ class SubagentLifecycleService:
+@@ -309,2 +313,5 @@ class SubagentLifecycleService:
 -        if not subagent_id:
 -            raise SubagentLifecycleError("Hermes failed to assign a child identity.")
 +        if not subagent_id or (cancel_check is not None and cancel_check()):
@@ -18,10 +23,10 @@ index 65865471..1ba3a8ab 100644
 +            _detach_child(parent, child)
 +            _close_child(child, "子执行在发布前结束")
 +            raise SubagentLifecycleError("父会话已关闭，子执行未发布。" if subagent_id else "Hermes 未分配子执行身份。")
-@@ -319,0 +326,2 @@ class SubagentLifecycleService:
+@@ -319,0 +327,2 @@ class SubagentLifecycleService:
 +            if request.independent:
 +                self._independent_records[subagent_id] = record
-@@ -322 +330,15 @@ class SubagentLifecycleService:
+@@ -322 +331,15 @@ class SubagentLifecycleService:
 -        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
 +        from tools.delegate_tool import _close_child, _detach_child
 +        try:
@@ -38,10 +43,38 @@ index 65865471..1ba3a8ab 100644
 +            _detach_child(parent, child)
 +            _close_child(child, "子执行发布失败")
 +            raise
-@@ -400 +422 @@ class SubagentLifecycleService:
+@@ -335,0 +359 @@ class SubagentLifecycleService:
++        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+@@ -338 +362,9 @@ class SubagentLifecycleService:
+-                record.future.result(timeout=timeout_seconds)
++                try:
++                    record.future.result(timeout=timeout_seconds)
++                except CancelledError:
++                    # Future 取消只撤掉排队工作，子对象释放后才有终态。
++                    with _REGISTRY.lock:
++                        queued_cancel_done = record.queued_cancel_done
++                    remaining = None if deadline is None else max(0, deadline - time.monotonic())
++                    if queued_cancel_done is not None and not queued_cancel_done.wait(remaining):
++                        raise TimeoutError
+@@ -352,0 +385,2 @@ class SubagentLifecycleService:
++            if record.queued_cancel_done is not None:
++                return SubagentCancelResult(True, state=record.state)
+@@ -355,0 +390,11 @@ class SubagentLifecycleService:
++            queued = (self._independent_records.get(record.handle.subagent_id) is record
++                      and record.future is not None and record.future.cancel())
++            if queued:
++                record.queued_cancel_done = threading.Event()
++        if queued:
++            from tools.delegate_tool import _close_child
++            try:
++                _close_child(agent, "排队子执行已取消")
++            finally:
++                self._finish(record, SubagentState.CANCELLED)
++            return SubagentCancelResult(True, state=SubagentState.CANCELLED)
+@@ -400 +445 @@ class SubagentLifecycleService:
 -            return _REGISTRY.records.get(handle.subagent_id)
 +            return self._independent_records.get(handle.subagent_id) or _REGISTRY.records.get(handle.subagent_id)
-@@ -414,0 +437,9 @@ class SubagentLifecycleService:
+@@ -414,0 +460,9 @@ class SubagentLifecycleService:
 +    def _run_admitted(self, record: _Record, goal: str, parent: Any, cancel_check: Optional[Callable[[], bool]]) -> None:
 +        # executor 排队期间 owner 仍可关闭，必须在子模型轮开始前复核。
 +        if cancel_check is not None and cancel_check():
@@ -51,20 +84,23 @@ index 65865471..1ba3a8ab 100644
 +            return
 +        self._run(record, goal, parent)
 +
-@@ -438,0 +470,4 @@ class SubagentLifecycleService:
+@@ -438,0 +493,4 @@ class SubagentLifecycleService:
 +        self._finish(record, state, **fields)
 +
 +    @staticmethod
 +    def _finish(record: _Record, state: SubagentState, **fields: Any) -> None:
-@@ -453,0 +489,2 @@ class SubagentLifecycleService:
+@@ -445,0 +504,2 @@ class SubagentLifecycleService:
++            if record.queued_cancel_done is not None:
++                record.queued_cancel_done.set()
+@@ -453,0 +514,2 @@ class SubagentLifecycleService:
 +        if type(request.independent) is not bool:
 +            raise SubagentLifecycleError("independent 必须是布尔值。")
 diff --git a/agent/turn_tool_round.py b/agent/turn_tool_round.py
-index 0afc7ab8..c4552e0d 100644
+index 0afc7ab8..81fde1d6 100644
 --- a/agent/turn_tool_round.py
 +++ b/agent/turn_tool_round.py
 @@ -21,0 +22,2 @@ logger = logging.getLogger("agent.conversation_loop")
-+RUNTIME_BOUNDARY_CONTRACT = 2
++RUNTIME_BOUNDARY_CONTRACT = 3
 +
 @@ -48,0 +51,11 @@ class ToolRoundVerdict:
 +

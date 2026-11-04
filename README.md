@@ -4,7 +4,7 @@
 
 主要适配目标为 **Pi Coding Agent 1.5.0 正式 SDK**（`@earendil-works/pi-coding-agent`），入口为 `@ziyuew1116/yunpiangao/pi`。OpenCode 2.1.4 保留独立[兼容入口](docs/opencode.md)。项目不使用 Pi Durable，不提供跨重启任务恢复。
 
-Hermes Agent v0.22.6 提供独立的 Python 嵌入与终端入口，需要固定版本的最小宿主补丁；使用方法、48 项入口与管道验证和支持边界见 [Hermes 说明](docs/hermes.md) 与[自包含代码流 / 数据流说明](docs/hermes.html)。原版 CLI、Gateway、HTTP API 尚未接入。
+Hermes Agent v0.22.6 提供独立的 Python 嵌入与终端入口，需要固定版本的最小宿主补丁；使用方法、52 项入口与管道验证和支持边界见 [Hermes 说明](docs/hermes.md) 与[自包含代码流 / 数据流说明](docs/hermes.html)。原版 CLI、Gateway、HTTP API 尚未接入。
 
 ## 在 Pi SDK 中使用
 
