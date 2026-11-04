@@ -2,21 +2,37 @@
 
 ## 两层依赖
 
-核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode、Claude 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
+核心层为 [scheduler.ts](../src/scheduler.ts) 和 [wait.ts](../src/wait.ts)，定义摘要与等待的业务语义。[包根入口](../src/index.ts) 只导出核心。核心通过 `CompactionPort`、`TaskSource` 和 `WaitPort` 与宿主交互，无宿主 SDK 导入、宿主名称分支或聊天库读写。
 
-Codex 0.166.0 的部分接入只复用等待核心，契约见 [Codex 实验性入口](codex.md)。它没有接入摘要调度器，也没有完整云片糕语义保证。
+适配层负责工具、执行和权限、宿主事件、输入与接续、原生上下文和压缩提交、生命周期。原生消息、摘要载荷、执行句柄和工作目录由适配层持有。`src/adapters/` 包含各宿主入口及桥接，OpenHands 的 Python 入口位于 `python/yunpiangao_openhands/`。Hermes 和 OpenHands 通过各自的 Node 管道调用同一份 TypeScript 核心，Claude Mods 通过构建脚本封装同一份核心。Codex 只连接等待核心。
 
-核心保留已有调度器和等待状态机；不变的是语义与依赖方向，代码可随已验证契约修改。没有通用 Harness 基类、动态注册平台、多层工厂或独立持久化任务框架。
+新增能力时，先将可独立验证的业务规则放入核心，用测试覆盖其输入、状态变化和结果。需要宿主参与时，依据真实调用边界定义或扩展端口。各适配器在宿主接口允许时接入并验证，其他入口在自己的 `FEATURES.md` 标记限制。核心能力的交付以核心契约和测试为准，适配状态按宿主及入口分别记录。
+
+源码运行时依赖与仓库构建约束分开。仓库级 `check` 和 `build` 会先应用固定版本 DeepSeek 补丁。Claude Mods 构建把计时器和 UUID 映射到 Mods 环境；若核心增加运行时导入，当前构建脚本会要求复核插件的打包方式。
+
+## 各入口的能力状态
+
+- [Pi Coding Agent 1.5.0](../src/adapters/pi/FEATURES.md)
+- [OpenCode 2.1.4](../src/adapters/opencode/FEATURES.md)
+- [Claude Code 2.1.317 / Agent SDK 0.3.317](../src/adapters/claude/FEATURES.md)
+- [Codex CLI 0.166.0](../src/adapters/codex/FEATURES.md)
+- [DeepSeek Harness 0.2.2-alpha.3](../src/adapters/deepseek/FEATURES.md)
+- [Hermes Agent v0.22.6](../src/adapters/hermes/FEATURES.md)
+- [OpenHands Software Agent SDK 1.59.0](../src/adapters/openhands/FEATURES.md)
+
+能力文件按固定版本和产品入口记录。`支持` 表示已接入且有对应的验证记录，范围以同一行说明为准。`部分支持` 表示实现受已知宿主限制。`未接入` 表示当前入口未实现该能力。已经接入但缺少验证的场景单独标明。新增核心能力时，在各文件补上对应状态及宿主依据。任务 handle 与等待状态的共同支持范围是当前 runtime 存续期间。
+
+## 压缩接口
 
 `createYunPianGao(port, options)` 创建一个进程内调度器。会话标识用于隔离状态；token 阈值针对最近完整回答的用量，不是历史累计计费量。
 
-## 事件
+### 事件
 
 调用 `onExecution(sessionID, phase)` 报告 `started`、`succeeded`、`failed` 或 `interrupted`。只有成功事件会安排一次延迟检查。输入进入主循环前调用 `onInput(sessionID)`，使当前准备结果失效。两类事件必须按宿主实际发生的顺序传递。
 
 `latestCompleted` 返回完整最终回答的标识及 token 数；无符合条件的回答时返回 `undefined`。宿主应过滤子会话、未完成回答、其他工作目录和刚完成的压缩，避免重复压缩循环。
 
-## 准备与提交
+### 准备与提交
 
 `prepare` 生成临时文本摘要及对应的上下文指纹。它不得创建一条持久化用户消息或占用主执行循环的锁。指纹必须对应实际用于摘要的模型、指令和历史，且可以与提交时的状态比较。
 
@@ -28,15 +44,17 @@ Codex 0.166.0 的部分接入只复用等待核心，契约见 [Codex 实验性�
 
 该复核与提交必须属于同一原生提交边界，不能先检查、再让其他任务改变上下文、最后写入旧结果。宿主也必须保留已经排队的新用户输入。
 
+准备返回时，调度器会检查输入代次。原生压缩已入队后，`takePrepared` 依据提交指纹复核。如果新输入尚未进入消息投影，仅调用 `onInput` 不会撤销已入队候选的提交资格。宿主须让提交指纹反映已接纳的新输入，或保证原生边界不会提交这样的候选。
+
 `compact` 可以只确认入队；`wait` 负责等待控制项完成。完成前调度器会持有准备结果，以便提交回调消费。参考实现见 [Pi 适配器](../src/adapters/pi.ts) 与 [OpenCode 适配器](../src/adapters/opencode.ts)。
 
-## 生命周期
+### 生命周期
 
 `close()` 取消本地定时器，将取消信号传给宿主请求，并等待这些请求退出。端口实现必须响应 `AbortSignal`；不合作的端口会延长关闭过程。客户端取消不保证远端模型已停止计算。
 
 状态与待提交摘要只在进程内保存，不跨进程恢复。卸载不能撤销宿主已经接受的任务，也不自动还原已经完成的压缩。
 
-## 摘要格式
+### 摘要格式
 
 核心以文本传递摘要。需要加密、不透明或结构化 replacement window 的 Harness 须实现并验证对应端口；provider 原生对象不能直接作为文本摘要提交。
 

@@ -59,9 +59,9 @@ OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实�
 | 层 | 责任 | 源码 |
 |---|---|---|
 | 核心 | 空闲调度、摘要失效和指纹复核；任务与单次等待、期限、结算竞争、接续重试及结构化依赖 | [scheduler.ts](src/scheduler.ts)、[wait.ts](src/wait.ts) |
-| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [Pi](src/adapters/pi.ts)、[OpenCode](src/adapters/opencode.ts)、[Claude SDK](src/adapters/claude.ts)、[Claude Mods](src/adapters/claude-mod/hooks/register.mjs)、[进程实现](src/adapters/process.ts) |
+| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [七个入口的接入状态](docs/adapters.md#各入口的能力状态) |
 
-适配层依赖核心层。核心不导入 Harness SDK、不按 Harness 名称分支、不读写聊天库。`CompactionPort`、`TaskSource` 和 `WaitPort` 对应真实调用边界；没有通用 Harness 基类、注册平台或能力矩阵。接口与生命周期见[适配契约](docs/adapters.md)。
+适配层依赖核心层。核心不导入 Harness SDK、不按 Harness 名称分支、不读写聊天库。新业务规则可以在核心独立实现和验证，各入口依据宿主接口选择接入。接口、扩展约定与生命周期见[适配契约](docs/adapters.md)，每个适配目录的 `FEATURES.md` 记录已接入能力和限制。
 
 实现范围、代码流、数据流和生命周期图见[设计说明（自包含 HTML）](docs/design.html)。下载后可离线阅读和打印。
 
