@@ -4,6 +4,8 @@
 
 主要适配目标为 **Pi Coding Agent 1.5.0 正式 SDK**（`@earendil-works/pi-coding-agent`），入口为 `@ziyuew1116/yunpiangao/pi`。OpenCode 2.1.4 保留独立[兼容入口](docs/opencode.md)。项目不使用 Pi Durable，不提供跨重启任务恢复。
 
+Codex CLI 0.166.0 提供独立的[实验性等待入口](docs/codex.md) `@ziyuew1116/yunpiangao/codex`，使用真实 app-server 动态工具和原生执行对象。该入口保持等待工具待回包；不支持空闲预生成摘要提交或等待期间压缩，不属于完整云片糕语义移植。代码流与数据流见[Codex 自包含说明](docs/codex.html)。
+
 ## 在 Pi SDK 中使用
 
 当前从源码构建，尚未发布 npm 包。需要 Node.js 22 或更新版本。
@@ -34,6 +36,12 @@ await ypg.session.prompt("启动后台任务，需要结果时使用 wait_for。
 
 这是 SDK 集成入口，不能直接作为 `pi -e` 扩展加载。Pi 1.5.0 的普通扩展回调没有结束正常工具轮的返回值；SDK 使用公开的 `agent.finishTurn` 实现原生停放，详见[接口与能力边界](docs/adapters.md#pi-coding-agent-150)。
 
+## Claude Code / Agent SDK
+
+Claude Code 2.1.317 可加载 `claude --plugin-dir "$PWD/dist/claude-mod"`；Agent SDK 0.3.317 使用 `@ziyuew1116/yunpiangao/claude` 的 `createClaudeQuery`，示例为 `node examples/claude.mjs`。两者复用正式 Mods，支持原生后台任务等待、权限介入、空闲摘要与原生压缩提交。
+
+原生 Bash 完整终态查询仍有接口缺口，因此这条入口不宣称覆盖全部目标语义。版本、输入流生命周期、关闭顺序、真实验证和支持边界见 [Claude 使用说明](docs/claude.md) 与[代码流和数据流](docs/claude.html)。它不是普通 settings hooks 或仅 MCP 的接入。
+
 ## OpenHands Software Agent SDK
 
 OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实例通过专用 Node 子进程复用相同的压缩调度器、等待 runtime 和进程执行源；Python 拥有真实 Conversation、工具与原生 Condensation。需要 Node.js 22 和 Python 3.12 及以上，安装、可运行入口与支持边界见 [OpenHands 使用说明](docs/openhands.md)，代码流与数据流见[自包含 HTML](docs/openhands.html)。
@@ -43,7 +51,7 @@ OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实�
 | 层 | 责任 | 源码 |
 |---|---|---|
 | 核心 | 空闲调度、摘要失效和指纹复核；任务与单次等待、期限、结算竞争、接续重试及结构化依赖 | [scheduler.ts](src/scheduler.ts)、[wait.ts](src/wait.ts) |
-| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [Pi](src/adapters/pi.ts)、[OpenCode](src/adapters/opencode.ts)、[进程实现](src/adapters/process.ts) |
+| 适配 | 工具注册、执行与权限边界、宿主事件、停放与接续、原生上下文和压缩提交、生命周期 | [Pi](src/adapters/pi.ts)、[OpenCode](src/adapters/opencode.ts)、[Claude SDK](src/adapters/claude.ts)、[Claude Mods](src/adapters/claude-mod/hooks/register.mjs)、[进程实现](src/adapters/process.ts) |
 
 适配层依赖核心层。核心不导入 Harness SDK、不按 Harness 名称分支、不读写聊天库。`CompactionPort`、`TaskSource` 和 `WaitPort` 对应真实调用边界；没有通用 Harness 基类、注册平台或能力矩阵。接口与生命周期见[适配契约](docs/adapters.md)。
 
@@ -89,11 +97,12 @@ npm ci
 npm run check
 npm test
 npm run test:pi
+npm run test:claude
 npm run audit:public
 npm pack --dry-run
 ```
 
-`npm test` 包含核心回归、OpenCode 适配单测和 Pi 真实 SDK 场景；`test:pi` 可单独运行 Pi 场景。Pi 测试使用临时项目、独立配置、会话及模型缓存路径，不连接外部模型或现有 DSW。隔离方式、实测范围和模型替身限制见[验证文档](docs/validation.md)。
+`npm test` 包含核心回归、OpenCode 适配单测、Pi 真实 SDK 与 Claude SDK/Mods 场景；`test:pi` 可单独运行 Pi 场景。Pi 测试使用临时项目、独立配置、会话及模型缓存路径，不连接外部模型或现有 DSW。隔离方式、实测范围和模型替身限制见[验证文档](docs/validation.md)。
 
 ## 许可证
 
