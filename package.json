@@ -28,6 +28,10 @@
     "./claude": {
       "types": "./dist/adapters/claude.d.ts",
       "import": "./dist/adapters/claude.js"
+    },
+    "./codex": {
+      "types": "./dist/adapters/codex.d.ts",
+      "import": "./dist/adapters/codex.js"
     }
   },
   "files": [
@@ -46,7 +50,9 @@
     "audit:public": "python3 scripts/audit_public.py",
     "prepack": "npm run build",
     "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
-    "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs"
+    "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs",
+    "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "install:codex": "node scripts/install-codex.mjs"
   },
   "engines": {
     "node": ">=22"

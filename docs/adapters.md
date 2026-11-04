@@ -4,6 +4,8 @@
 
 核心层为 `src/scheduler.ts` 和 `src/wait.ts`，定义摘要与等待的业务语义；`src/index.ts` 只导出核心。`src/adapters/` 负责 Pi、OpenCode、Claude 的真实接口与本地进程执行。适配层调用核心，核心不导入适配层或任何 Harness SDK。进程执行源属于适配层，因为它拥有操作系统句柄、工作目录和取消信号。
 
+Codex 0.166.0 的部分接入只复用等待核心，契约见 [Codex 实验性入口](codex.md)。它没有接入摘要调度器，也没有完整云片糕语义保证。
+
 核心保留已有调度器和等待状态机；不变的是语义与依赖方向，代码可随已验证契约修改。没有通用 Harness 基类、动态注册平台、多层工厂或独立持久化任务框架。
 
 `createYunPianGao(port, options)` 创建一个进程内调度器。会话标识用于隔离状态；token 阈值针对最近完整回答的用量，不是历史累计计费量。
@@ -56,11 +58,11 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
 
-成功、失败、取消、介入与超时竞争同一个状态转换：`waiting → ready → delivered`。第一次结束原因确定后，不再被迟到的事件或超时覆盖。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
+成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
 
-`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳失败或响应丢失时，runtime 以相同标识重试；端口不能每次创建一条新输入。状态通知本身不能替代接续。
+`WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳状态不明或发生可重试错误时，runtime 以相同标识重试。确认宿主无法接纳时，端口返回 `discarded`。宿主回执可能触发同步关闭时，适配器在转发事件前调用 `confirmDelivery(waitID, outcome)`，先记录本次投递结果。
 
-`onInput(sessionID)` 或 `onInterrupt(sessionID)` 结束尚未完成的等待，分别记录 `user_input` 或 `interrupted`，不再调用 `resume`；输入与中断的后续执行由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
+`onInput(sessionID)` 以 `user_input` 结束尚未结算的等待。默认由宿主管理后续执行。仍持有原生待回包工具的适配器可启用 `resumeOnInput`，通过 `resume` 回包并确认投递。`onInterrupt(sessionID)` 以 `interrupted` 结束等待，后续执行始终由宿主管理。已确定结果并开始投递的等待不会被后来的输入改写，宿主须保留新输入并按实际顺序处理。
 
 `stopWaits(sessionID, waitID?)` 强制结束该 owner 已注册的等待，停止重试并向在途投递传递取消信号，不取消底层任务；指定 `waitID` 时只收尾该次等待。已经确定的结束原因保留，尚未结束的等待记录为 `interrupted`。删除 owner、取消子任务时停止该 owner 的全部等待；停车失败只收尾本次等待，不能影响后来注册的等待。已经被宿主接纳的输入不能撤回。
 
