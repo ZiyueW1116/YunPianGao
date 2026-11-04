@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yunpiangao-openhands"
+version = "0.1.0"
+description = "云片糕的 OpenHands Software Agent SDK 入口"
+requires-python = ">=3.12"
+dependencies = ["openhands-sdk==1.59.0"]
+
+[project.scripts]
+yunpiangao-openhands = "yunpiangao_openhands.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["yunpiangao_openhands*"]

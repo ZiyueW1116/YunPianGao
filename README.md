@@ -42,6 +42,10 @@ Claude Code 2.1.317 可加载 `claude --plugin-dir "$PWD/dist/claude-mod"`；Age
 
 原生 Bash 完整终态查询仍有接口缺口，因此这条入口不宣称覆盖全部目标语义。版本、输入流生命周期、关闭顺序、真实验证和支持边界见 [Claude 使用说明](docs/claude.md) 与[代码流和数据流](docs/claude.html)。它不是普通 settings hooks 或仅 MCP 的接入。
 
+## OpenHands Software Agent SDK
+
+OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实例通过专用 Node 子进程复用相同的压缩调度器、等待 runtime 和进程执行源；Python 拥有真实 Conversation、工具与原生 Condensation。需要 Node.js 22 和 Python 3.12 及以上，安装、可运行入口与支持边界见 [OpenHands 使用说明](docs/openhands.md)，代码流与数据流见[自包含 HTML](docs/openhands.html)。
+
 ## 两层边界
 
 | 层 | 责任 | 源码 |

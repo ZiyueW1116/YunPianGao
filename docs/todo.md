@@ -20,3 +20,7 @@ OpenCode 2.1.4 的公开接口缺口与兼容边界继续记录在[OpenCode 契�
 - [ ] 其他插件在最终复核之后改写压缩结果的组合行为需要对应的原子提交协议；当前不提供跨插件事务。
 
 Claude 固定版本、defer 的文档与实测差异、SDK/终端触发区别见 [Claude 使用说明](claude.md)。
+
+## OpenHands
+
+OpenHands 1.59.0 的本地 SDK 入口与边界见 [OpenHands 说明](openhands.md)。真实模型自主工具选择、跨平台进程树取消、远端 Agent Server、ACP、MCP 接管和跨重启执行恢复均未验证；同步 `run()` 的输入排队与步骤边界暂停不代表流式 steering 或即时取消。

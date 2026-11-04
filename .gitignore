@@ -18,3 +18,9 @@ __pycache__/
 auth.json
 service.json
 .claude-lab/
+
+*.egg-info/
+.venv/
+
+.pytest_cache/
+python/build/

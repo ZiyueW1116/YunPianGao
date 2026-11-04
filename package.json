@@ -40,7 +40,10 @@
     "README.md",
     "LICENSE",
     "docs",
-    "examples"
+    "examples",
+    "python/pyproject.toml",
+    "python/requirements.lock",
+    "python/yunpiangao_openhands/*.py"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs",
@@ -52,6 +55,7 @@
     "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
     "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs",
     "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "test:openhands": "npm run build && node scripts/test_openhands.mjs",
     "install:codex": "node scripts/install-codex.mjs"
   },
   "engines": {

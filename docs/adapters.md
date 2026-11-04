@@ -140,3 +140,7 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 `createClaudeQuery` 加载正式 Mods；终端使用构建后的 `dist/claude-mod`。`scheduler.ts`、`wait.ts` 不导入 Claude SDK。构建将相同核心编译结果放进插件目录，用正式 `clock.after` 和 crypto 映射环境依赖。
 
 原生 Bash / agent.spawn 提供执行对象，Mods 轮边界停放，普通 prompt.submit 接续；session.compact 返回消息列表并由宿主持久化。SDK close 先 interrupt 再关闭原生进程。创建与取消、权限介入、输入时序、摘要资格、热重载和原生通知缺口的完整契约见 [Claude 使用说明](claude.md)。
+
+## OpenHands Software Agent SDK 1.59.0
+
+`OpenHandsSession` 是本地 Python SDK 产品入口。固定版本、工具协议、原生暂停收尾、Condenser 提交边界、跨语言管道、接续去重及生命周期契约见 [OpenHands 说明](openhands.md)。核心仍为 `scheduler.ts` 和 `wait.ts`；宿主专用桥接为 `src/adapters/openhands-core.ts`，Python 包为 `python/yunpiangao_openhands/`。没有复制核心规则或修改 OpenHands 源码。
