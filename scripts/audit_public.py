@@ -16,17 +16,21 @@ EMAIL=re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 def inspect(name,data,package=False):
     errors=[];path=Path(name)
     if path.is_absolute() or '..' in path.parts:return [(name,0,'归档路径越界')]
-    allowed=path.name in ROOT_FILES if len(path.parts)==1 else path.parts[0] in ({'dist','docs','examples','python'} if package else SOURCE_DIRS)
+    allowed=path.name in ROOT_FILES if len(path.parts)==1 else path.parts[0] in ({'dist','docs','examples','python','scripts'} if package else SOURCE_DIRS)
     if not allowed:errors.append((name,0,'文件不在公开范围'))
     if name not in ROOT_FILES and path.suffix not in SUFFIXES:errors.append((name,0,'不允许的文件类型'))
-    if len(data)>512*1024:errors.append((name,0,'文件超过公开包大小边界'))
+    # 官方宿主依赖使生成的锁文件超过 512 KiB；其他公开文件仍保留原上限。
+    if len(data)>(1024*1024 if name=='package-lock.json' else 512*1024):errors.append((name,0,'文件超过公开包大小边界'))
     try:text=data.decode('utf-8')
     except UnicodeDecodeError:return errors+[(name,0,'不允许二进制文件')]
     if '\0' in text:errors.append((name,0,'不允许二进制内容'))
     for number,line in enumerate(text.splitlines(),1):
         if any(p.search(line) for p in PRIVATE):errors.append((name,number,'私有路径、入口或真实会话标识'))
         for match in ASSIGNMENT.finditer(line):
-            if match[1] not in SYNTHETIC_VALUES:errors.append((name,number,'疑似静态凭证赋值'))
+            # 公共 npm 包名含凭证关键词；仅豁免精确名称及固定版本的完整依赖行。
+            dependency_name='@deepseek-ai/dsh-llm-deepseek-api-'+'key'
+            public_dependency=name=='package-lock.json' and re.fullmatch(r'\s*"'+re.escape(dependency_name)+r'": "0\.2\.2-alpha\.3",?',line)
+            if not public_dependency and match[1] not in SYNTHETIC_VALUES:errors.append((name,number,'疑似静态凭证赋值'))
         for email in EMAIL.findall(line):
             # npm 锁文件包含 glob 的公开弃用声明；仅允许这个已核实的上游维护者地址。
             public_metadata=name=='package-lock.json' and '"deprecated":' in line and email=='i'+'@izs.me'

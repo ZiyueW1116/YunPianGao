@@ -16,7 +16,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run test:legacy
+        if: matrix.node == 22
       - run: npm test
+        if: matrix.node != 22
       - run: npm run audit:public
       - run: npm pack --dry-run
   runtime:

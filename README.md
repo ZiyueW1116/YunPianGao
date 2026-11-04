@@ -48,6 +48,12 @@ Claude Code 2.1.317 可加载 `claude --plugin-dir "$PWD/dist/claude-mod"`；Age
 
 OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实例通过专用 Node 子进程复用相同的压缩调度器、等待 runtime 和进程执行源；Python 拥有真实 Conversation、工具与原生 Condensation。需要 Node.js 22 和 Python 3.12 及以上，安装、可运行入口与支持边界见 [OpenHands 使用说明](docs/openhands.md)，代码流与数据流见[自包含 HTML](docs/openhands.html)。
 
+## DeepSeek Harness
+
+官方 DeepSeek Harness `0.2.2-alpha.3` 的独立 Cordis 入口为 `@ziyuew1116/yunpiangao/deepseek`，需要 Node.js ≥24.9.0 和固定版本的最小宿主摘要补丁。支持原生工具停轮、进程与 activation handle 等待、空闲摘要准备及同步复核提交。正式 `dsh sdk-minimal` profile 已完成真实执行循环验证；模型提供者使用预设替身。
+
+使用、补丁、生命周期及支持边界见 [DeepSeek 接入](docs/deepseek.md)；代码流与数据流见[自包含 HTML](docs/deepseek-flow.html)。运行 `npm run test:deepseek` 可单独验收。它不通过 Pi 接入 DeepSeek 模型。
+
 ## 两层边界
 
 | 层 | 责任 | 源码 |
