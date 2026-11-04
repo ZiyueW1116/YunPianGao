@@ -35,7 +35,10 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.py",
+    "dist/claude-mod",
     "server.js",
     "README.md",
     "LICENSE",
@@ -46,7 +49,7 @@
     "python/yunpiangao_openhands/*.py"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build_claude_mod.mjs && node scripts/copy_hermes.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:runtime": "npm run build && python3 test/runtime.py && python3 test/runtime_wait.py",
@@ -55,6 +58,7 @@
     "test:pi": "npm run build && node --test test/pi-runtime.test.mjs",
     "test:claude": "npm run build && node --test test/claude-runtime.test.mjs test/claude-defer.test.mjs",
     "test:codex": "npm run build && node scripts/test-codex.mjs",
+    "test:hermes": "npm run build && python3 scripts/test_hermes.py",
     "test:openhands": "npm run build && node scripts/test_openhands.mjs",
     "install:codex": "node scripts/install-codex.mjs"
   },

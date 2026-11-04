@@ -144,3 +144,9 @@ Pi 实例的任务归属固定为创建时的 session ID。原生内存 fork 会
 ## OpenHands Software Agent SDK 1.59.0
 
 `OpenHandsSession` 是本地 Python SDK 产品入口。固定版本、工具协议、原生暂停收尾、Condenser 提交边界、跨语言管道、接续去重及生命周期契约见 [OpenHands 说明](openhands.md)。核心仍为 `scheduler.ts` 和 `wait.ts`；宿主专用桥接为 `src/adapters/openhands-core.ts`，Python 包为 `python/yunpiangao_openhands/`。没有复制核心规则或修改 OpenHands 源码。
+
+## Hermes Agent v0.22.6
+
+固定源码 `f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab` 加最小宿主补丁，入口为 Python `create_hermes_session()` 与 `python -m yunpiangao_hermes`。Python 适配持有原生工具、执行与压缩对象，通过本地双向管道运行共用的 TypeScript scheduler / wait runtime；核心没有宿主依赖或源码副本。
+
+首版选择嵌入式 `AIAgent.run_conversation()` 队列，复用原生 terminal、SubagentLifecycleService、ContextCompressor 与压缩事务。普通成功工具轮停放和独立子归属需要固定补丁；ContextEngine 的 `select_context` 不算持久压缩，`on_turn_complete` 不承担可靠收尾，`on_session_end` 也可能来自压缩。使用、提交复核、生命周期与明确能力缺口见 [Hermes 契约](hermes.md) 和[自包含说明](hermes.html)。

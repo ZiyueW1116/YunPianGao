@@ -24,3 +24,12 @@ Claude 固定版本、defer 的文档与实测差异、SDK/终端触发区别见
 ## OpenHands
 
 OpenHands 1.59.0 的本地 SDK 入口与边界见 [OpenHands 说明](openhands.md)。真实模型自主工具选择、跨平台进程树取消、远端 Agent Server、ACP、MCP 接管和跨重启执行恢复均未验证；同步 `run()` 的输入排队与步骤边界暂停不代表流式 steering 或即时取消。
+
+## Hermes 待验证范围
+
+- [ ] 真实模型自主选择 wait_for、摘要保真度与 token 用量比较；当前响应由本地模型替身预设。
+- [ ] 原生 CLI、Gateway、HTTP API 的独立接入和各自完成接纳；当前只有固定补丁上的嵌入式入口。
+- [ ] 原生生命周期服务的介入事件来源与解除契约；当前没有 input_required 转发或入口内的交互审批。
+- [ ] Windows、PTY 交互及记忆提供者 checkpoint。当前要求原地文本压缩，禁用独立记忆与后台复盘。
+
+具体版本、补丁、使用与当前证据见 [Hermes 说明](hermes.md)。
