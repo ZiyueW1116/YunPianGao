@@ -17,6 +17,8 @@ DSH_AGENTS_HOME=/absolute/path/to/isolated-agents \
 
 `build` 和 `check` 会对本仓库安装的 `dsh-compaction-basic` 执行确定性补丁。overlay 生成器只创建指定文件，文件已存在时拒绝覆盖；不会修改现有用户配置。`sdk-minimal` 是官方 stdio JSON-RPC 应用，启动后等待 SDK 客户端请求，不是交互终端。客户端用法见官方 [SDK 说明](https://github.com/deepseek-ai/deepseek-harness/tree/05b1cae8db6e674c5685101494d4eec24652424a/packages/sdk/client)。模型与凭证仍由宿主配置。
 
+生成的 overlay 保留 profile 的执行权限。官方 `sdk-minimal` 默认使用 `danger-full-access`，示例中的独立配置和会话目录只隔离宿主状态。需要工作区写入限制时，在后置 overlay 中将 `sandbox-policy` 的 `mode` 设为 `workspace-write`，并将 `workspaceRoot` 设为项目绝对路径。真实 profile 回归使用此限制。
+
 使用另一套已安装的宿主时，先对该宿主实际解析的包目录运行：
 
 ```sh
@@ -35,12 +37,16 @@ overlay 可为 `sdk`、`web` 或 `headless` 模板生成对应配置；这些模
 |---|---|
 | `start_process` | `command`、`args`；当前原生工作目录，不经 shell。经 `subprocess.resolveExecutable`、当前 `sandboxPolicy` 及 `sandbox.confine` 启动；stdout、stderr 各保留 64 KiB 尾部。返回本次执行 handle。 |
 | `start_subagent` | `prompt`、`description`；经原生 `SubagentActivation`，默认 `spawn` provider，`delivery: caller`。返回具体 child 与 message 执行 handle。 |
-| `wait_for` | `handle`、可选秒数 `timeout`，默认 600、范围 0–2,147,483。正常工具结果后 `concludeTurn()` 停放，真实 `agent/status: idle` 激活等待。 |
+| `wait_for` | `handle`、可选秒数 `timeout`，默认 600、范围 0–2,147,483。正常工具结果携带 `concludeTurn()` 决策。没有新输入时，等待在原生 `agent/status: idle` 激活。 |
 | `cancel_task` | 独立请求取消。进程调用原生 `terminate()`，子 Agent 调用本次 activation 的 `dispose()`。 |
 
-超时、新输入与 `interrupt()` 只结束一次等待，底层执行继续，同 handle 可以重等。取消是独立操作。执行源通知配合核心周期查询；周期查询不调用模型。完成、失败、取消或超时后，runtime 发送带等待 ID 的原生普通用户消息，实际开启下一轮。输出不提升为系统指令。
+启动工具先预留 handle。宿主提交含该标识的成功工具结果后，runtime 才接受该 handle 的查询、等待与取消。若工具结果被拒绝或移除了 handle，适配器终止未发布进程或释放未发布 activation。
+
+步骤准备或模型执行期间到达的新输入会使旧的等待意图失效。旧 `wait_for` 返回 `user_input`，宿主优先处理排队输入。输入也会结束已注册且尚未结算的等待。超时、新输入与 `interrupt()` 保留底层执行，同 handle 可以重等。核心使用执行源通知与周期查询，并在收到状态时复核 deadline。完成、失败、取消或超时后，runtime 发送带等待 ID 的普通用户消息，开启下一轮。
 
 接纳复核读取原生内存 `snapshotEvents()` 的 `agent/inbox/spliced` 记录，包含已经消费的插入；不只检查 pending inbox。压缩保留这些日志事实，因此消息消费、压缩或接纳回执丢失不会让同一等待再次发送。显式宿主取消已经接纳的输入属于宿主行为，适配器不复活被主动丢弃的消息。
+
+官方 SDK 的 `run()` 在首次 `idle` 返回。对于独立后台进程，`session/wait` 也可能在任务仍运行时返回。需要观察接续的调用方应在提交输入前订阅会话事件，并让宿主进程和订阅跨过停放期，按等待 ID 识别接续消息。
 
 结构化任务、期限、结果与恢复原因保留在进程内。每个原生 pre-step 追加普通上下文快照，由宿主记入 Session，再用于模型请求。压缩后可重新找回依赖与结果；需要完整结果时可重等同一 handle。快照不是跨重启执行恢复承诺。
 

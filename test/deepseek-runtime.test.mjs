@@ -32,7 +32,67 @@ test('DeepSeek 模型请求期间新输入使旧等待意图失效', { timeout: 
   } finally { await f.close() }
 })
 
-const invoke = (f, name, args, signal = new AbortController().signal, tool = f.ctx.tools.get(name, f.agent)) => tool.execute(args, { agent: f.agent, signal, callId: 'lifecycle_call', concludeTurn() {}, deferContext() {} })
+test('DeepSeek 领取输入后的异步步骤准备不能把新输入算入旧请求', { timeout: 15000 }, async () => {
+  const f = await fixture('complete'), entered = gate(), release = gate()
+  f.agent.ctx.on('agent/pre-step', async ({ step }, next) => {
+    if (step === 2) { entered.resolve(); await release.promise }
+    return next()
+  }, { prepend: true })
+  try {
+    send(f.agent, '启动任务')
+    await entered.promise
+    send(f.agent, '步骤准备期间的用户输入')
+    release.resolve()
+    await f.agent.whenIdle()
+    assert.equal(f.counts().parent, 3)
+    assert.equal(f.adapter.snapshot().waits.length, 0)
+    assert.equal(f.adapter.snapshot().tasks[0].status, 'working')
+    const results = f.agent.session.snapshotEvents().filter(e => e.type === 'tool/result')
+    assert.deepEqual(JSON.parse(results[1].data.message.content[0].text), { reason: 'user_input' })
+    await f.release()
+    await until(() => f.adapter.snapshot().tasks[0].status === 'succeeded')
+    assert.equal(f.counts().parent, 3)
+    assert.equal(f.agent.session.snapshotEvents().some(e => e.type === 'user/message' && e.data.id.startsWith('ypgw_')), false)
+  } finally { release.resolve(); await f.close() }
+})
+
+for (const name of ['start_process', 'start_subagent']) {
+  test(`DeepSeek 后置策略屏蔽 ${name} 时收尾未发布执行`, { timeout: 15000 }, async (t) => {
+    const f = await fixture(name === 'start_process' ? 'complete' : 'child')
+    const entered = gate(), release = gate()
+    let processHandle, blockedHandle
+    const spawn = f.ctx.subprocess.spawn.bind(f.ctx.subprocess)
+    t.mock.method(f.ctx.subprocess, 'spawn', (...args) => { processHandle = spawn(...args); return processHandle })
+    f.ctx.on('tools/post-execute', async (exec, result, next) => {
+      if (exec.name !== name) return next()
+      blockedHandle = JSON.parse(result.content[0].text).handle
+      entered.resolve()
+      await release.promise
+      return { kind: 'block', feedback: [{ type: 'text', text: '合成策略屏蔽启动结果' }] }
+    })
+    try {
+      send(f.agent, '启动任务')
+      await entered.promise
+      assert.deepEqual(f.adapter.snapshot().tasks, [])
+      release.resolve()
+      await f.agent.whenIdle()
+      const result = f.agent.session.snapshotEvents().find(e => e.type === 'tool/result')
+      assert.equal(result.data.message.isError, true)
+      assert.equal(f.counts().parent, 2)
+      assert.equal(JSON.stringify(f.calls.filter(c => c.kind === 'parent').at(-1).options.messages).includes(blockedHandle.id), false)
+      assert.deepEqual(f.adapter.snapshot().tasks, [])
+      if (processHandle) {
+        assert.equal(await processHandle.waitForExit(), true)
+        assert.notEqual((await processHandle.done).signal, null)
+      } else {
+        assert.equal(name, 'start_subagent')
+        await until(() => f.ctx.agents.list().length === 1)
+      }
+    } finally { release.resolve(); await f.close() }
+  })
+}
+
+const invoke = (f, name, args, signal = new AbortController().signal, tool = f.ctx.tools.get(name, f.agent)) => tool.execute(args, { agent: f.agent, signal, callId: 'lifecycle_call', rootCallId: 'lifecycle_call', concludeTurn() {}, deferContext() {} })
 const childInput = { prompt: '合成子任务', description: '生命周期验证' }
 
 for (const phase of ['setup', 'announce', 'tools']) {

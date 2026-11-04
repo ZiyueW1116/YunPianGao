@@ -65,11 +65,14 @@ export async function fixture(name, scheduling = {}, providedContext) {
         if (name === 'child-failure') throw new Error('合成子任务失败')
         chunks = name === 'child-approval' && child === 1 ? [...toolChunks('need_approval', {}), { type: 'finish', reason: { kind: 'tool-calls' } }] : textChunks('子 Agent 合成结果。')
       } else {
-        const n = ++parent, handle = adapter.snapshot().tasks[0]?.handle.id
+        const n = ++parent
+        const started = options.messages.filter(m => m.role === 'tool').flatMap(m => m.content)
+          .find(b => b.type === 'text' && b.text.startsWith('{"handle":{'))
+        const handle = started && JSON.parse(started.text).handle.id
         let tool
         if (!name.startsWith('summary')) {
           if (n === 1) tool = name.startsWith('child') ? ['start_subagent', { prompt: '合成子任务', description: '验证 activation' }] : ['start_process', { command: process.execPath, args: ['-e', name === 'before' ? 'console.log("DONE")' : name === 'failure' ? 'process.exit(7)' : 'const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);console.log("DONE")}},5)'] }]
-          if (n === 2 || name === 'timeout' && n === 3 || (name.includes('input') || name.includes('approval')) && n === 4 || name.endsWith('cancel') && n === 4) tool = ['wait_for', { handle, timeout: name === 'timeout' && n === 2 ? .03 : 10 }]
+          if (handle && (n === 2 || name === 'timeout' && n === 3 || (name.includes('input') || name.includes('approval')) && n === 4 || name.endsWith('cancel') && n === 4)) tool = ['wait_for', { handle, timeout: name === 'timeout' && n === 2 ? .03 : 10 }]
           if (name.endsWith('cancel') && n === 3) tool = ['cancel_task', { handle }]
         }
         if (name === 'before' && n === 2) await until(() => adapter.snapshot().tasks[0]?.status === 'succeeded')

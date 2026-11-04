@@ -7,6 +7,7 @@ export interface TaskSnapshot {
   result?: unknown
   error?: string
   intervention?: unknown
+  /** 执行源报告的终态时间，使用 Unix 毫秒。 */
   finishedAt?: number
 }
 export interface TaskHandle {
@@ -94,9 +95,15 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
   }
   const observe = (task: Task, snapshot: TaskSnapshot) => {
     if (closed || terminal(task.snapshot)) return
+    const previous = task.snapshot
     task.snapshot = copy(snapshot)
+    if (snapshot.status === "working") return
+    const observedAt = Date.now()
+    const outcomeAt = terminal(snapshot) ? snapshot.finishedAt ?? observedAt : observedAt
     for (const wait of waits.values()) {
-      if (wait.record.handle.id === task.handle.id && snapshot.status !== "working") settle(wait, snapshot.status, snapshot)
+      if (wait.record.handle.id !== task.handle.id) continue
+      if (outcomeAt >= wait.record.deadline) settle(wait, "timeout", previous)
+      else settle(wait, snapshot.status, snapshot)
     }
   }
   const refresh = (task: Task): Promise<void> => {
@@ -120,15 +127,28 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
     for (const wait of waits.values()) if (wait.record.sessionID === sessionID) settle(wait, reason, tasks.get(wait.record.handle.id)?.snapshot)
   }
 
+  const prepareTask = (sessionID: string, kind: TaskHandle["kind"], executionID: string, source: TaskSource) => {
+    if (closed) throw new Error("等待 runtime 已关闭。")
+    const handle = { id: `ypg_${randomUUID()}`, kind, sessionID, executionID }
+    return {
+      handle: copy(handle),
+      publish() {
+        if (closed) throw new Error("等待 runtime 已关闭。")
+        if (tasks.has(handle.id)) return
+        const task: Task = { handle, source, snapshot: { status: "working" }, dirty: false }
+        tasks.set(handle.id, task)
+        task.stop = source.subscribe?.(() => { void refresh(task) })
+        void refresh(task)
+      },
+    }
+  }
   return {
+    /** 预留执行身份，宿主接纳工具结果后再使 handle 可查询和等待。 */
+    prepareTask,
     register(sessionID: string, kind: TaskHandle["kind"], executionID: string, source: TaskSource): TaskHandle {
-      if (closed) throw new Error("等待 runtime 已关闭。")
-      const handle = { id: `ypg_${randomUUID()}`, kind, sessionID, executionID }
-      const task: Task = { handle, source, snapshot: { status: "working" }, dirty: false }
-      tasks.set(handle.id, task)
-      task.stop = source.subscribe?.(() => { void refresh(task) })
-      void refresh(task)
-      return copy(handle)
+      const task = prepareTask(sessionID, kind, executionID, source)
+      task.publish()
+      return task.handle
     },
     begin(sessionID: string, handleID: string, timeoutMs: number): WaitRecord {
       if (closed) throw new Error("等待 runtime 已关闭。")

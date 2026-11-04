@@ -122,6 +122,20 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
       catch (error) { if (!accepted()) throw error }
     }, onError: report,
   }, { pollIntervalMs: config.pollIntervalMs })
+  type PendingStart = ReturnType<typeof runtime.prepareTask> & { stop(): Promise<void> }
+  // 宿主可屏蔽或改写工具结果，执行仅在外层结果提交后发布。
+  const pendingStarts = new Map<string, PendingStart[]>()
+  const stageStart = (callID: string, task: ReturnType<typeof runtime.prepareTask>, stop: PendingStart["stop"]) => {
+    const pending = pendingStarts.get(callID) ?? []
+    pending.push({ ...task, stop })
+    pendingStarts.set(callID, pending)
+    return json({ handle: task.handle })
+  }
+  const stopStart = (task: PendingStart) => {
+    const stopping = task.stop()
+    starting.add(stopping)
+    void stopping.catch(report).finally(() => starting.delete(stopping))
+  }
   const engine = createYunPianGao({
     async latestCompleted() {
       if (agent.status !== "idle") return
@@ -168,11 +182,13 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
         const argv = [command, ...input.args]
         const launch = policy.mode === "danger-full-access" ? argv : (await services.sandbox.confine(argv, { ...policy, mode: policy.mode }, signal)).argv
         requireOpen(signal)
-        // 工具取消仅覆盖发布前创建；发布后独立任务由 cancel_task 终止。
         const process = services.subprocess.spawn({ argv: launch, cwd, stdio: { stdin: "ignore", stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } }, graceMs: config.graceMs ?? 1000 })
-        if (closed || signal.aborted) {
+        const stop = async () => {
           process.terminate()
           await Promise.allSettled([process.done, process.waitForExit()])
+        }
+        if (closed || signal.aborted) {
+          await stop()
           requireOpen(signal)
         }
         let snapshot: TaskSnapshot = { status: "working" }, cancelled = false
@@ -181,8 +197,8 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
           const stdout = process.collected.stdout!.readFrom(0), stderr = process.collected.stderr!.readFrom(0)
           snapshot = { status: cancelled && outcome.signal !== null ? "cancelled" : outcome.exitCode === 0 ? "succeeded" : "failed", finishedAt: Date.now(), result: { ...outcome, stdout: stdout.text, stderr: stderr.text, truncated: stdout.lossy || stderr.lossy } }
         }, () => { snapshot = { status: "failed", finishedAt: Date.now(), error: "宿主进程执行失败。" } }).finally(() => { for (const changed of listeners) changed() })
-        const handle = runtime.register(id, "process", randomUUID(), { async read() { return snapshot }, subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } }, async cancel() { cancelled = true; process.terminate() } })
-        return json({ handle })
+        const task = runtime.prepareTask(id, "process", randomUUID(), { async read() { return snapshot }, subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } }, async cancel() { cancelled = true; process.terminate() } })
+        return stageStart(exec.rootCallId, task, stop)
       })()
       starting.add(creation)
       try { return await creation } finally { starting.delete(creation) }
@@ -202,8 +218,8 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
           snapshot = { status: result.stopReason === "completed" ? "succeeded" : result.stopReason === "aborted" ? "cancelled" : "failed", result: json(result), finishedAt: Date.now() }
         }, () => { snapshot = { status: "failed", error: "宿主子 Agent 执行失败。", finishedAt: Date.now() } }).finally(() => { for (const changed of listeners) changed(); children.delete(activation) })
         children.set(activation, completed)
-        const handle = runtime.register(id, "subagent", `${activation.childId}:${activation.messageId ?? randomUUID()}`, { async read() { return snapshot }, subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } }, async cancel() { await activation.dispose() } })
-        return json({ handle })
+        const task = runtime.prepareTask(id, "subagent", `${activation.childId}:${activation.messageId ?? randomUUID()}`, { async read() { return snapshot }, subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } }, async cancel() { await activation.dispose() } })
+        return stageStart(exec.rootCallId, task, () => activation.dispose())
       })()
       starting.add(creation)
       try { return await creation } finally { starting.delete(creation) }
@@ -214,7 +230,11 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
     parameters: { handle: { type: "string", required: true }, timeout: { type: "number" } }, output,
     async execute(input, exec) {
       requireOpen(exec.signal)
-      if (modelEpoch !== epoch) return { reason: "user_input" }
+      const inputPending = [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some((input) => input.source.kind !== "yunpiangao")
+      if (modelEpoch !== epoch || inputPending) {
+        if (inputPending) exec.concludeTurn()
+        return { reason: "user_input" }
+      }
       if (parked) throw new Error("同一轮只能注册一次等待。")
       const timeout = input.timeout ?? 600
       if (!Number.isFinite(timeout) || timeout < 0 || timeout > 2147483) throw new Error("timeout 必须在 0–2147483 秒之间。")
@@ -235,9 +255,10 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
     if (parked) { runtime.activate(parked); parked = undefined; parkedCall = undefined }
   }))
   disposers.push(ctx.on("agent/pre-step", async (_event, next) => {
+    const stepEpoch = epoch
     const decision = await next()
     if (closed || decision.kind !== "enter") return decision
-    modelEpoch = epoch
+    modelEpoch = stepEpoch
     const state = dependencies()
     return state.tasks.length ? { ...decision, messages: [...decision.messages, message(`云片糕任务运行时状态（复核摘要中的依赖，结果可重等同一 handle 获取）：\n${JSON.stringify(state)}`)] } : decision
   }))
@@ -254,8 +275,23 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
   disposers.push(ctx.on("tools/change", invalidate))
   disposers.push(ctx.on("session/event", (_session, event) => {
     if (closed) return
-    if (event.type === "tool/result" && event.data.message.toolCallId === parkedCall && event.data.message.isError) {
-      runtime.stopWaits(id, parked); parked = undefined; parkedCall = undefined
+    if (event.type === "tool/result") {
+      const { toolCallId, isError, content } = event.data.message
+      const pending = pendingStarts.get(toolCallId)
+      if (pending) {
+        pendingStarts.delete(toolCallId)
+        for (const task of pending) {
+          if (!isError && content.some((block) => block.type === "text" && block.text.includes(task.handle.id))) task.publish()
+          else stopStart(task)
+        }
+      }
+      if (toolCallId === parkedCall && isError) {
+        runtime.stopWaits(id, parked); parked = undefined; parkedCall = undefined
+      }
+    }
+    if (event.type === "step/end") {
+      for (const tasks of pendingStarts.values()) for (const task of tasks) stopStart(task)
+      pendingStarts.clear()
     }
     if (event.type === "model/selection") { epoch++; engine.onInput(id) }
     if (event.type === "turn/end" && event.data.reason.kind === "aborted") runtime.onInterrupt(id)
@@ -287,11 +323,13 @@ function attachAgent(agent: Agent, compaction: DeepSeekCompactionEngine, config:
       })()])
       await stopped
       await Promise.allSettled([...starting])
+      const unpublished = await Promise.allSettled([...pendingStarts.values()].flat().map((task) => task.stop()))
+      pendingStarts.clear()
       const disposed = await Promise.allSettled([...children.keys()].map((child) => child.dispose()))
       await Promise.allSettled([...children.values()])
       await compacting?.catch(() => {})
       const released = await Promise.allSettled(disposers.reverse().map(async (dispose) => { await dispose() }))
-      const failure = [...await stopped, ...disposed, ...released].find((result) => result.status === "rejected")
+      const failure = [...await stopped, ...unpublished, ...disposed, ...released].find((result) => result.status === "rejected")
       if (failure?.status === "rejected") throw failure.reason
     })
     closed = true

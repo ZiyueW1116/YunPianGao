@@ -46,7 +46,7 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 ### 任务与等待接口
 
-`register(sessionID, kind, executionID, source)` 注册具体执行，返回 `TaskHandle`。`kind` 为 `process` 或 `subagent`；`executionID` 必须关联到这次执行，不能使用可重复启动任务的名称。handle 只能由所属 session 等待或取消。
+`register(sessionID, kind, executionID, source)` 注册具体执行，返回 `TaskHandle`。`kind` 为 `process` 或 `subagent`，`executionID` 标识这一次执行。需要等宿主接纳工具结果的适配器可以用 `prepareTask(...)` 预留身份，再调用 `publish()`。发布后，所属 session 才能等待或取消该 handle。
 
 `TaskSource` 提供以下能力：
 
@@ -56,7 +56,7 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
 
-成功、失败、取消、介入与超时竞争同一个状态转换：`waiting → ready → delivered`。第一次结束原因确定后，不再被迟到的事件或超时覆盖。终态在后续等待中保持可读；`input_required` 可以回到 `working`。查询失败不等同于任务失败，runtime 会继续复核直到得到结果或本次等待超时。
+成功、失败、取消、介入与超时共用状态转换 `waiting → ready → delivered`。注册时已知的终态立即结算。等待中的新终态以 `finishedAt` 为准，缺少完成时间或观测到 `input_required` 时使用观测时间。该时间达到 deadline 即按超时结算，即使定时器尚未执行。已确定的原因保持有效，晚到终态仍可在重等时读取。`input_required` 可以回到 `working`。查询失败后，runtime 会继续复核，直到得到结果或本次等待超时。
 
 `WaitPort.resume(record, signal)` 必须触发真实 session 接续，并按 `record.id` 幂等接纳。接纳失败或响应丢失时，runtime 以相同标识重试；端口不能每次创建一条新输入。状态通知本身不能替代接续。
 

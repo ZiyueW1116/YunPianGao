@@ -11,7 +11,7 @@
 
 <h2>工具执行与任务数据</h2><div class="diagram"><svg viewBox="0 0 1010 300" role="img" aria-label="模型通过工具启动任务，handle 进入核心，runtime 经原生 inbox 接续"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:#537b72;stroke:none;marker-end:none"/></marker></defs>
 <rect x="10" y="24" width="170" height="76" class="native"/><text x="95" y="54" text-anchor="middle">DeepSeek Agent</text><text class="small" x="95" y="78" text-anchor="middle">原生模型与工具循环</text>
-<rect x="245" y="24" width="230" height="76"/><text x="360" y="54" text-anchor="middle">start_process / subagent</text><text class="small" x="360" y="78" text-anchor="middle">返回这一次执行的 handle</text>
+<rect x="245" y="24" width="230" height="76"/><text x="360" y="54" text-anchor="middle">start_process / subagent</text><text class="small" x="360" y="78" text-anchor="middle">预留这一次执行的 handle</text>
 <rect x="535" y="24" width="230" height="76" class="native"/><text x="650" y="54" text-anchor="middle">宿主执行对象</text><text class="small" x="650" y="78" text-anchor="middle">subprocess / activation</text>
 <rect x="825" y="24" width="175" height="76"/><text x="912" y="54" text-anchor="middle">TaskSource</text><text class="small" x="912" y="78" text-anchor="middle">通知 + 状态查询</text>
 <path d="M180 62H245"/><path d="M475 62H535"/><path d="M765 62H825"/>
@@ -20,8 +20,8 @@
 <rect x="10" y="185" width="170" height="80" class="native"/><text x="95" y="215" text-anchor="middle">下一轮 Agent</text><text class="small" x="95" y="241" text-anchor="middle">普通消息 + 依赖快照</text>
 <path d="M95 100V140H360V185"/><path d="M475 225H535"/><path d="M912 100V225H765"/><path d="M535 265V286H95V265"/><text class="small" x="325" y="280" text-anchor="middle">等待 ID 幂等接纳，经原生 followup 唤醒</text>
 </svg></div>
-<div class="steps"><article class="step"><span class="n">01</span><h3>绑定执行</h3><p class="small">handle 指向具体进程对象，或 child/message activation；任务名不是执行身份。</p></article><article class="step"><span class="n">02</span><h3>注册与激活</h3><p class="small">工具先返回正常结果；真实 idle 后激活。提前完成和零期限结果在此之前暂存。</p></article><article class="step"><span class="n">03</span><h3>只结算一次</h3><p class="small">完成、失败、取消和超时竞争同一 WaitRecord；重复通知不覆盖结果。</p></article><article class="step"><span class="n">04</span><h3>实际接续</h3><p class="small">runtime 送普通输入；原生 inbox 插入日志保存消费后的接纳证据，重试不创建第二轮。</p></article></div>
-<p>用户输入与超时结束这一次等待，执行仍继续。<code>cancel_task</code> 单独取消任务；等待中不靠模型反复查询或长时间 sleep。</p>
+<div class="steps"><article class="step"><span class="n">01</span><h3>发布执行</h3><p class="small">宿主提交含 handle 的成功结果后，核心才开放查询和等待。若结果被屏蔽，适配器收尾未发布执行。</p></article><article class="step"><span class="n">02</span><h3>停放等待</h3><p class="small">正常等待在原生 idle 时激活。步骤准备期间已有新输入时，旧请求返回 <code>user_input</code>，宿主继续处理输入。</p></article><article class="step"><span class="n">03</span><h3>按期限结算</h3><p class="small">核心对照完成时间或观测时间与 deadline。达到期限即超时，已确定的原因保持有效。</p></article><article class="step"><span class="n">04</span><h3>实际接续</h3><p class="small">runtime 送普通输入。原生 inbox 插入日志保留已消费消息的接纳证据，重试共用同一等待 ID。</p></article></div>
+<p>新输入会收尾尚未结算的等待。输入和超时都保留底层执行，同一 handle 可重等。<code>cancel_task</code> 独立取消任务。</p>
 
 <h2>摘要代码流与原生提交</h2><div class="diagram"><svg viewBox="0 0 1010 310" role="img" aria-label="回答后提前生成完整摘要，原生维护期间同步复核再提交"><defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><polygon points="0,0 10,5 0,10" fill="#537b72"/></marker></defs>
 <rect x="10" y="25" width="220" height="82"/><text x="120" y="54" text-anchor="middle">最终回答 → 空闲窗口</text><text class="small" x="120" y="80" text-anchor="middle">用量阈值 + idleDelayMs</text>
@@ -44,7 +44,7 @@
 <tr><td>进程 / activation</td><td>DeepSeek 宿主服务</td><td>取消是独立操作；close 收尾未发布创建与子 Agent，独立进程由宿主服务继续拥有。</td></tr>
 </tbody></table></div>
 
-<h2>验证能证明什么</h2><div class="grid"><article class="card"><h3>已运行的路径</h3><p>正式 <code>dsh --profile sdk-minimal</code>、Loader、原生工具 pipeline、Agent loop、subprocess、activation、compaction 与隔离 JSONL persistence。</p><p>覆盖完成、失败、超时后重等、用户介入、独立取消、等待中压缩、通知丢失与重复、消费后重试、摘要失效及创建/关闭竞争。</p></article><article class="card"><h3>明确的限制</h3><p>模型替身预设了工具选择和文本，不证明真实模型自主行为或摘要保真度。本地委派权限固定，人工审批与问答不向子 Agent 开放。</p><p>不承诺跨重启 handle 恢复、external provider 介入转发、Windows、Web UI 或真实文件 HMR 的验收结果。</p></article></div>
+<h2>验证能证明什么</h2><div class="grid"><article class="card"><h3>已运行的路径</h3><p>正式 <code>dsh --profile sdk-minimal</code>、Loader、原生工具 pipeline、Agent loop、subprocess、activation、compaction 与隔离 JSONL persistence。</p><p>回归覆盖步骤准备期间的新输入、启动结果拦截、期限竞争和压缩后的实际接续。压缩场景从模型请求解析 handle、deadline、reason 与任务结果。</p></article><article class="card"><h3>SDK 与模型边界</h3><p>SDK 的 <code>run()</code> 在首次 idle 返回。调用方可保持会话订阅，按等待 ID 观察接续。profile 回归使用 <code>workspace-write</code>，官方模板默认 <code>danger-full-access</code>。</p><p>模型替身预设工具选择和文本。真实模型自主行为、摘要保真度、外部 provider、Windows、Web UI 和文件 HMR 仍待验证。</p></article></div>
 <p class="small">普通任务父请求 3 次；超时重等 4 次；用户输入后重等或独立取消后等待 5 次。子 Agent 另有 1 次请求。额外唤醒与长 sleep 的断言来自合成流程；延迟观测不构成性能承诺。</p>
 <p>运行入口与补丁：<a href="deepseek.md">DeepSeek 使用说明</a> · 实际验证命令：<a href="validation.md#deepseek-harness-022-alpha3">验证记录</a> · 通用边界：<a href="adapters.md">适配契约</a></p>
 <footer>云片糕 · DeepSeek Harness 0.2.2-alpha.3 · 2026-11-03<br>本文件包含全部样式与图示，断网可阅读和打印。外部链接只用于查证。</footer>

@@ -534,11 +534,13 @@ test("compact 后取消内部等待的子任务，原生 interrupt 为 no-op 仍
     await f.tools.get("wait_for").execute({ handle: f.handle.id }, f.context)
     await until(() => f.resumes.some((r) => r.sessionID === "parent"))
     assert.equal(f.resumes.find((r) => r.sessionID === "parent").metadata.reason, "cancelled")
-    await sleep(150); await f.plugin.reconcile()
+    await until(async () => {
+      await f.plugin.reconcile()
+      const event = { sessionID: "child", system: [] }
+      f.hooks.get("context")(event)
+      return JSON.parse(event.system[0].text.split("\n", 2)[1]).tasks[0].status === "succeeded"
+    })
     assert.equal(f.resumes.filter((r) => r.sessionID === "child").length, 0)
-    const event = { sessionID: "child", system: [] }
-    f.hooks.get("context")(event)
-    assert.equal(JSON.parse(event.system[0].text.split("\n", 2)[1]).tasks[0].status, "succeeded")
   } finally { await f.plugin.close() }
 })
 
