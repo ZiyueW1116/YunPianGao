@@ -76,6 +76,8 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `begin(sessionID, handleID, timeoutMs)` 注册等待并返回 `WaitRecord`。期限以毫秒保存；同一 session 的新等待会结束其前一次等待。宿主确认暂停，且不会再丢弃新唤醒之后，调用 `activate(waitID)`。任务可以在暂停之前完成，结果会暂存到激活时再接续。
 
+原工具调用仍可回包时，适配器可以用 `takeReady(waitID)` 直接交付已结算且尚未激活的等待。成功时返回状态为 `delivered` 的记录，后续激活不会再次投递。等待尚未就绪或已激活时返回 `undefined`。
+
 成功、失败、取消、介入与超时竞争同一次 `waiting → ready` 转换。注册时已知的终态立即结算。等待中的新终态以执行源报告的 `finishedAt` 为准，缺少完成时间或观测到 `input_required` 时使用观测时间。该时间达到 deadline 即按超时结算，即使定时器尚未执行。
 
 第一次结束原因确定后保持不变。接续确认后转为 `delivered`，宿主确认无法接纳时转为 `discarded`。晚到终态仍可在重等时读取，`input_required` 可以回到 `working`。查询失败后，runtime 会继续复核，直到得到结果或本次等待超时。
@@ -96,7 +98,9 @@ OpenCode 适配器使用 `prepare-then-commit` 策略，在提交时复核模型
 
 `createPiSession(options, scheduling)` 是正式 SDK 入口，返回原生 `session`、创建结果、`snapshot()`、`interrupt()` 和异步 `close()`。`scheduling` 采用核心的阈值及空闲延迟，仅支持 `prepare-then-commit`。适配器拥有 `DefaultResourceLoader`，通过 inline extension 注册工具和事件；调用方使用原生 `bindExtensions` 绑定运行模式与 UI。每个适配实例对应一个 session 生命周期，不支持原地 reload 后继续复用。
 
-原生 `agent.finishTurn` 的 `end` 决策在工具成功返回后结束执行，不中断工具，也不清空宿主输入队列。适配器保留 Pi 已安装的轮边界处理，再为包含 `wait_for` 的轮选择 `end`。同批其他工具先正常完成，一轮最多注册一次等待。`agent_settled` 激活 runtime 等待；提前完成或零期限结果在激活前暂存。用户输入在旧模型请求期间到达时，输入版本检查拒绝过期等待意图；等待中收到输入时，仅结束该次等待。`interrupt()` 明确结束本次等待并调用原生 abort。
+`wait_for` 在注册前复核指定任务状态。任务已结算或零期限立即到期时，由原工具结果返回结算记录。仍需等待时，原生 `agent.finishTurn` 的 `end` 决策在同批工具完成后停放会话，保留宿主输入队列。`agent_settled` 激活等待。若结果在等待注册后、激活前就绪，runtime 暂存结果并在激活后接续一次。一轮最多注册一次等待。
+
+用户输入在旧模型请求期间到达时，输入版本检查拒绝过期等待意图。等待中收到输入时，仅结束该次等待。`interrupt()` 明确结束本次等待并调用原生 abort。
 
 接续使用 `session.sendCustomMessage(..., {triggerTurn:true, deliverAs:"followUp"})`；ID 保存在 `details`，通过原生内存会话条目复核已接纳消息。调用失败时，若已持久化对应 ID 则不重复启动；未接纳时由核心按相同 ID 重试。Pi API 在进程内调用，没有 OpenCode SSE 重连问题。TaskSource 的事件和查询来自本地执行状态；核心的周期复核仍覆盖通知遗漏。模型请求的完成不依赖插件推断 idle 时间或读取聊天库。
 

@@ -45,8 +45,8 @@ async function fixture(name, scheduling = { thresholdTokens: 999999 }, inMemory 
         'const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("finished", "");console.log("DONE")}},5)'
       return ["start_process", { command: process.execPath, args: ["-e", code] }]
     }
-    if (n === 2) return wait(name === "timeout" ? .03 : 10)
-    if (name === "timeout" && n === 3) return wait()
+    if (n === 2) return wait(name === "zero-timeout" ? 0 : name === "timeout" ? .03 : 10)
+    if ((name === "timeout" || name === "rewait") && n === 3) return wait()
     if ((name === "input" || name === "child-input") && n === 4) return wait()
     if (name.endsWith("cancel") && n === 3) return ["cancel_task", { handle }]
     if (name.endsWith("cancel") && n === 4) return wait()
@@ -70,7 +70,12 @@ async function fixture(name, scheduling = { thresholdTokens: 999999 }, inMemory 
         if (!tool && !name.startsWith("summary")) resumedAt = Date.now()
       }
       if (res.destroyed) return
-      if (name === "before" && kind === "parent" && parent === 2) await until(() => harness.snapshot().tasks[0].status === "succeeded")
+      if (kind === "parent" && parent === 2 && (name === "before" || name === "failure")) {
+        await until(() => harness.snapshot().tasks[0].status === (name === "before" ? "succeeded" : "failed"))
+      }
+      if (kind === "parent" && parent === 4 && name.endsWith("cancel")) {
+        await until(() => harness.snapshot().tasks[0].status === "cancelled")
+      }
       if (name === "input-stream" && kind === "parent" && parent === 2) await releaseWait.promise
       const n = calls.length
       const delta = tool ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${n}`, type: "function", function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] } : { role: "assistant", content: text }
@@ -99,13 +104,13 @@ async function fixture(name, scheduling = { thresholdTokens: 999999 }, inMemory 
   }
 }
 
-for (const name of ["complete", "before", "failure", "timeout", "input", "cancel", "compact", "compact-race", "child", "child-input", "child-cancel", "child-failure", "interrupt", "resume-ack", "batch", "child-compact"]) {
+for (const name of ["complete", "before", "failure", "timeout", "input", "cancel", "compact", "compact-race", "child", "child-input", "child-cancel", "child-failure", "interrupt", "resume-ack", "batch", "child-compact", "rewait", "zero-timeout"]) {
   test(`Pi 真实 SDK：${name}`, { timeout: 15000 }, async () => {
     const f = await fixture(name)
     try {
       await f.session.prompt("启动合成任务并等待。")
       await until(() => f.snapshot().waits.length === 1)
-      if (!["before", "failure"].includes(name)) {
+      if (!["before", "failure", "zero-timeout"].includes(name)) {
         await sleep(20); assert.equal(f.counts().parent, 2)
         assert.equal(f.snapshot().tasks[0].status, "working")
       }
@@ -135,18 +140,30 @@ for (const name of ["complete", "before", "failure", "timeout", "input", "cancel
         const native = f.session.sendCustomMessage.bind(f.session)
         f.session.sendCustomMessage = async (...args) => { await native(...args); throw new Error("合成接纳回执丢失") }
       }
-      await f.release()
-      const expected = name === "timeout" ? 4 : name.includes("input") || name.endsWith("cancel") ? 5 : 3
+      if (name === "zero-timeout") assert.equal(f.snapshot().tasks[0].status, "working")
+      else await f.release()
+      const expected = ["timeout", "rewait"].includes(name) ? 4 : name.includes("input") || name.endsWith("cancel") ? 5 : 3
       await until(() => f.counts().parent === expected && f.session.isIdle)
       await sleep(30)
       assert.equal(f.counts().parent, expected)
       const state = f.snapshot(), last = state.waits.at(-1)
       assert.equal(last.state, "delivered")
-      assert.equal(last.reason, name.endsWith("cancel") ? "cancelled" : ["failure", "child-failure"].includes(name) ? "failed" : "succeeded")
+      assert.equal(last.reason, name === "zero-timeout" ? "timeout" : name.endsWith("cancel") ? "cancelled" : ["failure", "child-failure"].includes(name) ? "failed" : "succeeded")
       if (name === "before") assert.ok(last.snapshot.finishedAt <= last.createdAt)
       if (name === "timeout") { assert.equal(state.waits[0].reason, "timeout"); assert.equal(state.waits[0].handle.id, last.handle.id) }
-      const resumed = f.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "yunpiangao.resume")
-      assert.equal(resumed.length, name === "timeout" ? 2 : 1)
+      const entries = f.session.sessionManager.getEntries()
+      const resumed = entries.filter((entry) => entry.type === "custom_message" && entry.customType === "yunpiangao.resume")
+      const inline = ["before", "failure", "zero-timeout", "rewait"].includes(name) || name.endsWith("cancel")
+      assert.equal(resumed.length, name === "timeout" ? 2 : inline && name !== "rewait" ? 0 : 1)
+      if (inline) {
+        const reply = entries.findLast((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "wait_for")
+        assert.deepEqual(JSON.parse(reply.message.content[0].text), last)
+      }
+      if (name === "rewait") {
+        assert.equal(state.waits.length, 2)
+        assert.equal(state.waits[0].handle.id, last.handle.id)
+        assert.equal(resumed[0].details.id, state.waits[0].id)
+      }
       const final = f.calls.filter((call) => call.kind === "parent").at(-1)
       assert.ok(JSON.stringify(final.body).includes("云片糕任务运行时状态"))
       assert.equal(f.calls.filter((call) => call.kind === "parent").flatMap((call) => call.body.messages).filter((message) => message.role === "system" && JSON.stringify(message).includes('"output":"DONE')).length, 0)
@@ -158,6 +175,28 @@ for (const name of ["complete", "before", "failure", "timeout", "input", "cancel
     } finally { await f.close() }
   })
 }
+
+test("Pi 停放前任务完成时仍只接续一次", { timeout: 15000 }, async () => {
+  const f = await fixture("complete")
+  const finishTurn = f.session.agent.finishTurn
+  f.session.agent.finishTurn = async (turn, signal) => {
+    if (turn.toolResults.some((result) => result.toolName === "wait_for")) {
+      assert.equal(f.snapshot().waits[0].state, "waiting")
+      await f.release()
+      await until(() => f.snapshot().waits[0].state === "ready")
+      assert.equal(f.counts().parent, 2)
+    }
+    return finishTurn(turn, signal)
+  }
+  try {
+    await f.session.prompt("启动合成任务并等待。")
+    await until(() => f.snapshot().waits[0]?.state === "delivered" && f.session.isIdle)
+    const resumed = f.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "yunpiangao.resume")
+    assert.deepEqual(resumed.map((entry) => entry.details.id), [f.snapshot().waits[0].id])
+    assert.equal(f.counts().parent, 3)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
 
 for (const name of ["summary-commit", "summary-stale", "summary-recheck"]) {
   test(`Pi 空闲摘要：${name}`, { timeout: 15000 }, async () => {

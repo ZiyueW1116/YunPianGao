@@ -79,7 +79,7 @@ OpenHands 1.59.0 提供独立 Python SDK 入口 `OpenHandsSession`。每个实�
 |---|---|
 | `start_process` | `command`、`args`；在当前目录启动具体进程，不经 shell，继承环境，返回本次执行的 handle；保留末尾 64 KiB 合并输出 |
 | `start_subagent` | `prompt`、`description`；创建独立 Pi SDK session，沿用当前模型、认证和目录，使用原生工具且不加载扩展；返回具体 session 执行的 handle |
-| `wait_for` | `handle`、可选 `timeout`（秒，默认 600，范围 0–2,147,483）；每轮只注册一次等待，允许同批其他工具完成；成功返回注册结果后，由原生轮边界停放；runtime 负责等候并接续 |
+| `wait_for` | `handle`、可选 `timeout`（秒，默认 600，范围 0–2,147,483）。每轮只注册一次等待，允许同批其他工具完成。已就绪的结果由原工具调用直接返回，仍需等待时在原生轮边界停放，由 runtime 等候并接续。 |
 | `cancel_task` | `handle`；独立请求取消，进程发送 SIGTERM，子 Agent 调用 Pi `abort()`；只返回目标 handle 的请求回执 |
 
 handle 表示一次执行，不能用任务名称或其他工具的标识代替。超时、新输入和 `interrupt()` 只结束本次等待，底层任务继续，可再次等待同一 handle。取消任务使用独立工具，取消为协作式，不保证立即结束。

@@ -55,6 +55,26 @@ test("先完成后注册，仍在宿主释放旧循环后接续", async () => {
   } finally { await f.runtime.close() }
 })
 
+test("直接回包与运行时接续只能消费同一个等待一次", async () => {
+  const f = fixture()
+  try {
+    const waiting = f.runtime.begin("parent", f.handle.id, 1000)
+    assert.equal(f.runtime.takeReady(waiting.id), undefined)
+    f.change({ status: "succeeded", result: "合成结果" })
+    await f.runtime.refresh()
+    const reply = f.runtime.takeReady(waiting.id)
+    assert.equal(reply.state, "delivered")
+    assert.equal(reply.snapshot.result, "合成结果")
+    assert.equal(f.runtime.takeReady(waiting.id), undefined)
+    f.runtime.activate(waiting.id)
+    const parked = f.runtime.begin("parent", f.handle.id, 1000)
+    f.runtime.activate(parked.id)
+    assert.equal(f.runtime.takeReady(parked.id), undefined)
+    await until(() => f.delivered.length > 0)
+    assert.deepEqual(f.delivered.map(({ id }) => id), [parked.id])
+  } finally { await f.runtime.close() }
+})
+
 test("超时仅结束等待，任务可再次等待，取消任务使用独立操作", async () => {
   const f = fixture()
   try {

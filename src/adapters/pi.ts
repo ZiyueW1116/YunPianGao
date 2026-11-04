@@ -21,7 +21,7 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
   let sessionID: string
   let epoch = 0, modelEpoch = 0, parked: string | undefined, closed = false
   let closing: Promise<void> | undefined
-  const waitingCalls = new Map<string, string>()
+  const waitingCalls = new Map<string, string | undefined>()
   const children = new Map<AgentSession, Promise<void> | undefined>()
   const starting = new Set<Promise<unknown>>()
   const requireOpen = (signal?: AbortSignal) => {
@@ -147,14 +147,18 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
     })
     pi.registerTool({
       name: "wait_for", label: "等待任务", executionMode: "sequential",
-      description: "等待具体 handle，一轮只调用一次。timeout 为秒数，默认 600。runtime 停放当前 session，在完成、失败、取消、介入或超时时接续。超时和用户输入只结束这次等待，任务继续，可再次等待。",
+      description: "等待具体 handle，一轮只调用一次。timeout 为秒数，默认 600。已就绪的结果由本次调用直接返回，仍需等待时由 runtime 停放会话并在结果就绪后接续。收到结果后据此继续。超时和用户输入只结束这次等待，任务继续，可再次等待。",
       parameters: Type.Object({ handle: Type.String(), timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 2147483 })) }),
-      async execute(call, input) {
-        requireOpen()
+      async execute(call, input, signal) {
+        requireOpen(signal)
         if (waitingCalls.size) throw new Error("同一轮只能注册一次等待。")
+        await runtime.refresh(input.handle)
+        requireOpen(signal)
         if (modelEpoch !== epoch) return result({ reason: "user_input", instruction: "请先处理新输入。" })
         const record = runtime.begin(id(), input.handle, Math.ceil((input.timeout ?? 600) * 1000))
-        waitingCalls.set(call, record.id)
+        const ready = runtime.takeReady(record.id)
+        waitingCalls.set(call, ready ? undefined : record.id)
+        if (ready) return result(ready)
         parked = record.id
         return result(record)
       },
@@ -171,7 +175,7 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
       modelEpoch = epoch
       const state = dependencies()
       if (state.tasks.length) event.messages.push({ role: "custom", customType: "yunpiangao.dependencies",
-        content: `云片糕任务运行时状态（以此复核摘要中的依赖；结果可再次等待同一 handle 获取）：\n${JSON.stringify(state)}`, display: false, timestamp: Date.now() })
+        content: `云片糕任务运行时状态（以此复核摘要中的依赖。已有结果时据此继续，缺少结果时可再次等待同一 handle。）：\n${JSON.stringify(state)}`, display: false, timestamp: Date.now() })
     })
     pi.on("agent_start", () => { if (!closed) engine.onExecution(id(), "started") })
     pi.on("agent_settled", (event) => {
@@ -205,8 +209,9 @@ export async function createPiSession(options: PiSessionOptions = {}, scheduling
       if (closed) return decision
       const call = turn.toolResults.find((item) => waitingCalls.has(item.toolCallId))
       if (!call) return decision
-      const waitID = waitingCalls.get(call.toolCallId)!
+      const waitID = waitingCalls.get(call.toolCallId)
       waitingCalls.delete(call.toolCallId)
+      if (!waitID) return decision
       const wait = runtime.snapshot(id()).waits.find((item) => item.id === waitID)
       if (wait?.reason === "user_input") {
         runtime.activate(waitID)

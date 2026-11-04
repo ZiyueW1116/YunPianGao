@@ -167,6 +167,13 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       else tick(wait)
       return copy(wait.record)
     },
+    /** 原工具调用可接收已结算结果时，直接交付尚未激活的等待。 */
+    takeReady(waitID: string): WaitRecord | undefined {
+      const wait = waits.get(waitID)
+      if (closed || !wait || wait.active || wait.record.state !== "ready") return
+      wait.record.state = "delivered"
+      return copy(wait.record)
+    },
     /** 宿主确认暂停且不再丢弃新唤醒之后激活，避免接续输入被同一次中断吞掉。 */
     activate(waitID: string) {
       const wait = waits.get(waitID)
