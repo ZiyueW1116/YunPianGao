@@ -1,8 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { binary, fixture, until, sleep } from "./codex-runtime.mjs"
+import { binary, fixture, gate, until, sleep } from "./codex-runtime.mjs"
 import { CodexRpc } from "../dist/adapters/codex-rpc.js"
+import { createCodexSession } from "../dist/adapters/codex.js"
 import { existsSync } from "node:fs"
+import { mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
 
@@ -20,6 +23,7 @@ for (const name of ["complete", "before", "failure", "spawn-failure", "timeout",
         const steered = await f.prompt("用户介入：先处理当前输入。")
         await steered.completed
         assert.equal(f.snapshot().waits[0].reason, "user_input")
+        assert.equal(f.snapshot().waits[0].state, "delivered")
         if (name.includes("input")) {
           assert.equal(f.snapshot().tasks[0].status, "working")
           await f.prompt("继续等待同一任务。")
@@ -62,6 +66,27 @@ for (const name of ["complete", "before", "failure", "spawn-failure", "timeout",
   })
 }
 
+test("Codex 真实 app-server：中断后可在新轮等待同一任务", { skip: !binary, timeout: 30000 }, async () => {
+  const f = await fixture("interrupt-rewait")
+  try {
+    const first = await f.prompt("启动任务并等待。")
+    await until(() => f.snapshot().waits.length === 1)
+    await f.interrupt()
+    assert.equal((await first.completed).status, "interrupted")
+    assert.equal(f.snapshot().tasks[0].status, "working")
+    const next = await f.prompt("继续等待原任务。")
+    await until(() => f.snapshot().waits.length === 2 || f.counts().parent > 3)
+    const [previous, current] = f.snapshot().waits
+    assert.equal(previous.reason, "interrupted")
+    assert.equal(current?.handle.id, previous.handle.id)
+    assert.equal(current.state, "waiting")
+    await f.release()
+    assert.equal((await next.completed).status, "completed")
+    assert.equal(f.snapshot().waits[1].reason, "succeeded")
+    assert.equal(f.counts().parent, 4)
+  } finally { await f.close() }
+})
+
 test("Codex 真实 app-server：模型流期间的新输入拒绝过期等待意图", { skip: !binary, timeout: 30000 }, async () => {
   const f = await fixture("input-stream")
   try {
@@ -73,6 +98,40 @@ test("Codex 真实 app-server：模型流期间的新输入拒绝过期等待意
     assert.equal(f.snapshot().waits.length, 0)
     assert.equal(f.snapshot().tasks[0].status, "working")
     await f.release(); await sleep(80); assert.equal(f.counts().parent, 3)
+  } finally { await f.close() }
+})
+
+test("Codex 真实 app-server：被拒绝的新输入保留模型的等待意图", { skip: !binary, timeout: 30000 }, async () => {
+  const f = await fixture("input-stream")
+  try {
+    const running = await f.prompt("启动任务。")
+    await until(() => f.counts().parent === 2)
+    await assert.rejects(f.prompt("x".repeat(1_048_577)), /Input exceeds the maximum length/)
+    f.releaseWait.resolve()
+    await until(() => f.snapshot().waits.length === 1 || f.counts().parent > 2)
+    assert.equal(f.snapshot().waits[0]?.state, "waiting")
+    assert.equal(f.counts().parent, 2)
+    await f.release()
+    assert.equal((await running.completed).status, "completed")
+    assert.equal(f.snapshot().waits[0].reason, "succeeded")
+    assert.equal(f.counts().parent, 3)
+  } finally { await f.close() }
+})
+
+test("Codex 真实 app-server：在途首条输入阻止 compact，空闲后压缩使用独立控制轮", { skip: !binary, timeout: 30000 }, async () => {
+  const f = await fixture("summary")
+  try {
+    const submitting = f.prompt("用户发送首条输入。")
+    await assert.rejects(f.compact(), /本次请求未提交/)
+    const running = await submitting
+    assert.equal((await running.completed).status, "completed")
+    assert.equal(f.counts().parent, 1)
+    assert.equal(f.counts().summaries, 0)
+    assert.ok(JSON.stringify(f.requests[0].body.input).includes("用户发送首条输入。"))
+    const compacted = await f.compact()
+    assert.notEqual(compacted.id, running.id)
+    assert.equal(compacted.status, "completed")
+    assert.equal(f.counts().summaries, 1)
   } finally { await f.close() }
 })
 
@@ -113,8 +172,12 @@ test("Codex 真实 app-server：结束等待后原生压缩，依赖可重新等
     await until(() => f.snapshot().waits.length === 2)
     assert.equal(f.snapshot().tasks[0].status, "working")
     const waiting = f.requests.filter((request) => request.kind === "parent").at(-1)
-    assert.ok(JSON.stringify(waiting.body.input).includes(id))
-    assert.ok(JSON.stringify(waiting.body.input).includes("云片糕任务运行时状态"))
+    const state = waiting.body.input.find((item) => JSON.stringify(item).includes("云片糕任务运行时状态"))
+    assert.equal(state?.role, "user")
+    const context = JSON.stringify(state)
+    assert.ok(context.includes(id))
+    assert.ok(context.includes(String(f.snapshot().waits[0].deadline)))
+    assert.ok(context.includes("user_input"))
     await f.release(); await until(() => f.counts().parent === 5)
     assert.equal(f.counts().summaries, 1)
   } finally { await f.close() }
@@ -318,6 +381,50 @@ test("Codex 真实 app-server：重复工具回包只接续一次", { skip: !bin
   } finally { CodexRpc.prototype.respond = native; await f?.close() }
 })
 
+for (const omitFailureEvent of [false, true]) {
+  test(`Codex 真实 app-server：中断抢先于回包时按${omitFailureEvent ? "历史" : "通知"}确认工具失败`, { skip: !binary, timeout: 30000 }, async () => {
+    const nativeRespond = CodexRpc.prototype.respond, nativeSubscribe = CodexRpc.prototype.subscribe
+    const reply = gate()
+    let sendLate, failed, f
+    CodexRpc.prototype.respond = function(id, result) {
+      const value = JSON.parse(result.contentItems[0].text)
+      if (value.wait?.reason === "succeeded") {
+        sendLate = () => nativeRespond.call(this, id, result)
+        reply.resolve()
+      } else nativeRespond.call(this, id, result)
+    }
+    CodexRpc.prototype.subscribe = function(listener) {
+      return nativeSubscribe.call(this, (message) => {
+        if (message.method === "item/completed" && message.params.item.tool === "wait_for" && message.params.item.success === false) {
+          failed = message.params.item
+          if (omitFailureEvent) return
+        }
+        listener(message)
+      })
+    }
+    try {
+      f = await fixture("complete")
+      const running = await f.prompt("启动任务并等待。")
+      await until(() => f.snapshot().waits.length === 1)
+      await f.release(); await reply.promise
+      await f.interrupt()
+      assert.equal((await running.completed).status, "interrupted")
+      assert.equal(failed?.status, "failed")
+      sendLate()
+      await until(() => f.snapshot().waits[0].state === "discarded")
+      assert.equal(f.snapshot().waits[0].reason, "succeeded")
+      await sleep(40)
+      assert.equal(f.counts().parent, 2)
+      await f.closeAdapter()
+      assert.equal(f.snapshot().waits[0].state, "discarded")
+    } finally {
+      CodexRpc.prototype.respond = nativeRespond
+      CodexRpc.prototype.subscribe = nativeSubscribe
+      await f?.close()
+    }
+  })
+}
+
 test("Codex 真实 app-server：遗漏完成通知后通过原生读取确认工具已接纳", { skip: !binary, timeout: 30000 }, async () => {
   const native = CodexRpc.prototype.subscribe
   CodexRpc.prototype.subscribe = function(listener) {
@@ -335,6 +442,40 @@ test("Codex 真实 app-server：遗漏完成通知后通过原生读取确认工
     await until(() => f.snapshot().waits[0].state === "delivered")
     assert.equal(f.counts().parent, 3)
   } finally { CodexRpc.prototype.subscribe = native; await f?.close() }
+})
+
+test("Codex 真实 app-server：未落盘的中断投影不能结算子任务", { skip: !binary, timeout: 30000 }, async () => {
+  const native = CodexRpc.prototype.request
+  let f, projected = 0
+  CodexRpc.prototype.request = async function(method, params, ...rest) {
+    const result = await native.call(this, method, params, ...rest)
+    if (method === "thread/read" && f && params.threadId !== f.threadId) {
+      for (const turn of result.thread.turns) {
+        if (turn.completedAt == null && ["inProgress", "interrupted"].includes(turn.status)) {
+          // 固定宿主在状态先于历史更新时只改写 status，保留空的完成时间。
+          turn.status = "interrupted"
+          projected++
+        }
+      }
+    }
+    return result
+  }
+  try {
+    f = await fixture("child-failure")
+    const running = await f.prompt("启动子任务并等待。")
+    await until(() => f.snapshot().waits.length === 1 && f.counts().child === 1)
+    await until(() => projected > 0)
+    await sleep(40)
+    assert.equal(f.snapshot().waits[0].state, "waiting")
+    assert.equal(f.counts().parent, 2)
+    await f.release()
+    assert.equal((await running.completed).status, "completed")
+    const wait = f.snapshot().waits[0]
+    assert.equal(wait.reason, "failed")
+    assert.match(wait.snapshot.error, /合成子任务失败/)
+    assert.ok(JSON.stringify(f.requests.at(-1).body.input).includes(wait.id))
+    assert.equal(f.counts().parent, 3)
+  } finally { CodexRpc.prototype.request = native; await f?.close() }
 })
 
 test("Codex 真实 app-server：遗漏子任务终态与回答事件后按具体 turn 查询接续", { skip: !binary, timeout: 30000 }, async () => {
@@ -377,4 +518,22 @@ test("Codex 真实 app-server：原生 compact 中断待回包工具的能力缺
     const failed = f.events.find((event) => event.method === "item/completed" && event.params.item.tool === "wait_for")
     assert.equal(failed.params.item.success, false)
   } finally { CodexRpc.prototype.request = native; await f.close() }
+})
+
+
+test("Codex 入口：启动宿主前拒绝指向默认 CODEX_HOME 的目录别名", { skip: !binary, timeout: 30000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "yunpiangao-home-"))
+  const defaults = join(home, ".codex"), alias = join(home, "alias")
+  try {
+    await mkdir(defaults)
+    await symlink(defaults, alias, process.platform === "win32" ? "junction" : "dir")
+    await assert.rejects(async () => {
+      const session = await createCodexSession({
+        codexPath: binary, codexHome: alias, cwd: home,
+        env: { HOME: home, USERPROFILE: home },
+      })
+      await session.close()
+    }, /不能使用默认 Codex 配置与会话目录/)
+    assert.deepEqual(await readdir(defaults), [])
+  } finally { await rm(home, { recursive: true, force: true }) }
 })

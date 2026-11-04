@@ -28,14 +28,14 @@ export interface WaitRecord {
   handle: TaskHandle
   createdAt: number
   deadline: number
-  state: "waiting" | "ready" | "delivered"
+  state: "waiting" | "ready" | "delivered" | "discarded"
   reason?: ResumeReason
   resolvedAt?: number
   snapshot?: TaskSnapshot
 }
 export interface WaitPort {
-  /** 重试使用相同 record.id；宿主必须按此标识幂等接纳接续输入。 */
-  resume(record: Readonly<WaitRecord>, signal: AbortSignal): Promise<void>
+  /** 宿主按 record.id 幂等接纳重试，确认无法接纳时返回 discarded。 */
+  resume(record: Readonly<WaitRecord>, signal: AbortSignal): Promise<void | "discarded">
   onError?(error: unknown): void
 }
 
@@ -43,7 +43,7 @@ type Task = { handle: TaskHandle; source: TaskSource; snapshot: TaskSnapshot; st
 type Waiting = { record: WaitRecord; active: boolean; sending: boolean; delivery?: AbortController; timer?: ReturnType<typeof setTimeout> }
 
 /** 进程内保存任务与等待；结束等待不调用任务的 cancel。 */
-export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: number } = {}) {
+export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: number; resumeOnInput?: boolean } = {}) {
   const interval = options.pollIntervalMs ?? 500
   if (!Number.isFinite(interval) || interval < 1) throw new TypeError("pollIntervalMs 必须是正数。")
   const tasks = new Map<string, Task>()
@@ -67,7 +67,7 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
 
   const deliver = (wait: Waiting) => {
     if (closed || !wait.active || wait.sending || wait.record.state !== "ready") return
-    if (["user_input", "interrupted"].includes(wait.record.reason!)) {
+    if (wait.record.reason === "interrupted" || (wait.record.reason === "user_input" && !options.resumeOnInput)) {
       wait.record.state = "delivered"
       return
     }
@@ -78,8 +78,8 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
       const signal = AbortSignal.any([controller.signal, delivery.signal])
       signal.throwIfAborted()
       return port.resume(copy(wait.record), signal)
-    }).then(() => {
-      wait.record.state = "delivered"
+    }).then((outcome) => {
+      if (wait.record.state === "ready") wait.record.state = outcome === "discarded" ? outcome : "delivered"
     }).catch((error) => { if (wait.record.state === "ready") report(error) }).finally(() => {
       wait.delivery = undefined
       wait.sending = false
@@ -153,12 +153,13 @@ export function createWaitRuntime(port: WaitPort, options: { pollIntervalMs?: nu
     onInput(sessionID: string) { endSessionWait(sessionID, "user_input") },
     onInterrupt(sessionID: string) { endSessionWait(sessionID, "interrupted") },
     /** 停止已注册等待与本地投递；指定 waitID 时只收尾该次等待，不取消任务。 */
-    stopWaits(sessionID: string, waitID?: string) {
+    stopWaits(sessionID: string, waitID?: string, outcome: "delivered" | "discarded" = "delivered") {
       for (const wait of waits.values()) {
         if (wait.record.sessionID !== sessionID || (waitID && wait.record.id !== waitID)) continue
         if (wait.timer) clearTimeout(wait.timer)
+        const undelivered = wait.record.state === "waiting" || wait.record.state === "ready"
         settle(wait, "interrupted")
-        wait.record.state = "delivered"
+        if (undelivered) wait.record.state = outcome
         wait.delivery?.abort()
       }
     },

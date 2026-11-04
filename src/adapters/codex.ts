@@ -2,7 +2,8 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { randomUUID } from "node:crypto"
 import { isAbsolute, resolve } from "node:path"
-import { homedir } from "node:os"
+import { homedir, userInfo } from "node:os"
+import { realpath, stat } from "node:fs/promises"
 import { createWaitRuntime, type TaskSnapshot, type TaskSource, type WaitRecord } from "../wait.js"
 import { CodexRpc, CodexRpcError, type RpcMessage } from "./codex-rpc.js"
 
@@ -52,24 +53,36 @@ const tools = [
 /** Codex 0.166.0 的实验性等待入口；不提供空闲预生成压缩或等待期压缩。 */
 export async function createCodexSession(options: CodexSessionOptions): Promise<CodexSession> {
   if (![options.codexPath, options.codexHome, options.cwd].every(isAbsolute)) throw new Error("codexPath、codexHome、cwd 必须是绝对路径。")
-  if (resolve(options.codexHome) === resolve(homedir(), ".codex")) throw new Error("请提供独立 codexHome，不能使用默认 Codex 配置与会话目录。")
   if (options.pollIntervalMs !== undefined && (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs < 1)) throw new TypeError("pollIntervalMs 必须是正数。")
-  const env = { ...process.env, ...options.env, CODEX_HOME: options.codexHome }
+  const codexHome = await realpath(options.codexHome)
+  const directory = await stat(codexHome, { bigint: true })
+  if (!directory.isDirectory()) throw new Error("codexHome 必须是已存在的目录。")
+  const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, CODEX_HOME: codexHome }
+  const hostHome = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || userInfo().homedir
+  for (const home of new Set([homedir(), hostHome])) {
+    const defaults = await stat(resolve(home, ".codex"), { bigint: true }).catch((error) => {
+      if (error.code !== "ENOENT") throw error
+    })
+    if (defaults?.dev === directory.dev && defaults.ino === directory.ino)
+      throw new Error("请提供独立 codexHome，不能使用默认 Codex 配置与会话目录。")
+  }
   const version = await promisify(execFile)(options.codexPath, ["--version"], { cwd: options.cwd, env, timeout: 10_000 })
   if (version.stdout.trim() !== `codex-cli ${CODEX_VERSION}`) throw new Error(`Codex 入口只验证了 ${CODEX_VERSION}；实际版本不匹配。`)
   const rpc = new CodexRpc(options.codexPath, options.cwd, env)
   let closed = false, closePromise: Promise<void> | undefined, publicClosePromise: Promise<void> | undefined, owner = "", activeTurn: string | undefined
   let replacementTask: Promise<CodexSession> | undefined, replacementCancelled = false, replacementPublished = false
   const lifetime = new AbortController()
-  let inputVersion = 0, samplingVersion = 0, compacting = false
+  const inputPrefix = `ypgi_${randomUUID()}_`
+  const submissions = new Set<Promise<CodexTurn>>()
+  let submittedVersion = 0, acceptedVersion = 0, samplingVersion = 0, compacting = false
   let sandbox: unknown, permissions: string | undefined
   const creations = new Set<Promise<unknown>>()
   const commands = new Map<string, { source: TaskSource; finish: Promise<void>; stop: () => void }>()
   const children = new Map<string, { turnID?: string; text: string; truncated: boolean; snapshot: TaskSnapshot; changed: Set<() => void> }>()
   const interventions = new Map<number | string, string>()
   const parked = new Map<string, { id: number | string; callID: string; turnID: string; replied: boolean }>()
-  const acknowledgements = new Map<string, () => void>()
-  const turns = new Map<string, { public: CodexTurn; resolve: (value: CodexTurnResult) => void }>()
+  const acknowledgements = new Map<string, (outcome: "delivered" | "discarded") => void>()
+  const turns = new Map<string, { public: CodexTurn; resolve: (value: CodexTurnResult) => void; finished: boolean }>()
   const requireOpen = () => { if (closed) throw new Error("Codex 适配实例已关闭；请创建新实例。") }
   const completeChild = (id: string, completed: any) => {
     const state = children.get(id)
@@ -82,51 +95,73 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
     for (const changed of state.changed) changed()
   }
   const report = (error: unknown) => { if (!closed) { try { options.onError?.(error) } catch { /* 诊断不改变任务状态。 */ } } }
+  const readTurns = async (threadId: string, signal: AbortSignal): Promise<any[]> => {
+    try {
+      const read = await rpc.request("thread/read", { threadId, includeTurns: true }, signal)
+      return read.thread.turns
+    } catch (error) {
+      // 0.166.0 的分页历史在首轮落盘前可能暂不可查，事件和后续查询仍可结算。
+      if (error instanceof CodexRpcError && error.code === -32601 && error.message === "list_turns is not supported yet") return []
+      throw error
+    }
+  }
+  const toolOutcome = (item: any) => {
+    if (item?.type !== "dynamicToolCall" || item.tool !== "wait_for") return
+    if (item.status === "completed" && item.success === true) return "delivered"
+    if (item.status === "failed" || (item.status === "completed" && item.success === false)) return "discarded"
+  }
   const turn = (id: string) => {
     let item = turns.get(id)
     if (!item) {
       let resolve!: (value: CodexTurnResult) => void
       const completed = new Promise<CodexTurnResult>((done) => { resolve = done })
-      item = { public: { id, completed }, resolve }; turns.set(id, item)
+      item = { public: { id, completed }, resolve, finished: false }; turns.set(id, item)
     }
     return item
   }
   // 原生 additionalContext 按值去重且跨 compact 保留；输入版本确保新请求重新携带实际依赖。
-  const context = () => ({ yunpiangao: { kind: "untrusted", name: "yunpiangao_runtime", value: JSON.stringify({ label: "云片糕任务运行时状态", inputVersion, ...runtime.snapshot(owner) }) } })
-  const reply = (waitID: string, record: WaitRecord) => {
-    const pending = parked.get(waitID)
-    if (!pending || pending.replied) return
-    pending.replied = true
-    rpc.respond(pending.id, output({ wait: record, runtime: runtime.snapshot(owner) }))
+  const context = (inputVersion: number) => ({ yunpiangao: { kind: "untrusted", name: "yunpiangao_runtime", value: JSON.stringify({ label: "云片糕任务运行时状态", inputVersion, ...runtime.snapshot(owner) }) } })
+  const acceptInput = (version: number) => {
+    if (version <= acceptedVersion) return
+    acceptedVersion = version
+    runtime.onInput(owner)
   }
   const runtime = createWaitRuntime({
     async resume(record, signal) {
       signal.throwIfAborted(); requireOpen()
       const pending = parked.get(record.id)
       if (!pending) throw new Error("Codex 等待工具已失效，不能在其他轮次重放。")
-      let acknowledged = false
-      const accepted = new Promise<void>((done) => acknowledgements.set(pending.callID, () => { acknowledged = true; done() }))
+      const key = `${pending.turnID}:${pending.callID}`
+      let outcome: "delivered" | "discarded" | undefined
+      let wake: (() => void) | undefined
+      acknowledgements.set(key, (value) => { outcome ??= value; wake?.() })
       try {
-        reply(record.id, record)
-        while (!acknowledged) {
+        if (!pending.replied) {
+          rpc.respond(pending.id, output({ wait: record, runtime: runtime.snapshot(owner) }))
+          pending.replied = true
+        }
+        while (!outcome) {
           await new Promise<void>((done, reject) => {
             const timer = setTimeout(finish, options.pollIntervalMs ?? 500)
             const abort = () => { cleanup(); reject(signal.reason) }
-            function cleanup() { clearTimeout(timer); signal.removeEventListener("abort", abort) }
+            function cleanup() { clearTimeout(timer); signal.removeEventListener("abort", abort); wake = undefined }
             function finish() { cleanup(); done() }
+            wake = finish
             signal.addEventListener("abort", abort, { once: true })
-            void accepted.then(finish)
             if (signal.aborted) abort()
           })
           signal.throwIfAborted()
-          if (acknowledged) break
-          const read = await rpc.request("thread/read", { threadId: owner, includeTurns: true }, signal)
-          acknowledged = read.thread.turns.some((item: any) => item.items?.some((item: any) => item.id === pending.callID && item.type === "dynamicToolCall" && item.status === "completed"))
+          if (outcome) break
+          const turns = await readTurns(owner, signal)
+          const history = turns.find((item) => item.id === pending.turnID)
+          outcome ??= toolOutcome(history?.items?.find((item: any) => item.id === pending.callID))
         }
-      } finally { acknowledgements.delete(pending.callID) }
+        parked.delete(record.id)
+        if (outcome === "discarded") return outcome
+      } finally { acknowledgements.delete(key) }
     },
     onError: report,
-  }, { pollIntervalMs: options.pollIntervalMs })
+  }, { pollIntervalMs: options.pollIntervalMs, resumeOnInput: true })
 
   const track = <T>(operation: () => Promise<T>) => {
     const promise = Promise.resolve().then(operation)
@@ -145,7 +180,7 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
     })
     const finish = rpc.request("command/exec", {
       command: [command, ...args], processId: processID, cwd: options.cwd,
-      streamStdoutStderr: true, disableTimeout: true,
+      streamStdoutStderr: true, disableOutputCap: true, disableTimeout: true,
       ...(permissions ? { permissionProfile: permissions } : { sandboxPolicy: sandbox }),
     }).then((result) => {
       snapshot = { status: cancelRequested && result.exitCode === 137 ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed", finishedAt: Date.now(), result: { ...result, output: bytes.toString("utf8"), truncated, cancellationRequested: cancelRequested } }
@@ -188,9 +223,10 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
       return runtime.register(owner, "subagent", `${id}:${state.turnID}`, {
         async read(signal) {
           if (["working", "input_required"].includes(state.snapshot.status)) {
-            const read = await rpc.request("thread/read", { threadId: id, includeTurns: true }, signal)
-            const completed = read.thread.turns.find((turn: any) => turn.id === state.turnID)
-            if (completed) completeChild(id, completed)
+            const turns = await readTurns(id, signal)
+            const completed = turns.find((turn) => turn.id === state.turnID)
+            // 历史投影会把尚未记录终态的 turn 标为 interrupted，且不填完成时间。
+            if (completed?.completedAt != null) completeChild(id, completed)
           }
           return state.snapshot
         },
@@ -225,8 +261,11 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
       case "wait_for": {
         const timeout = args.timeout ?? 600
         if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout < 0 || timeout > 2_147_483) throw new Error("timeout 必须在 0 到 2,147,483 秒之间。")
-        if (samplingVersion !== inputVersion) { value = { reason: "user_input", message: "模型请求期间已有新输入，本次等待意图失效。" }; break }
-        if ([...parked.values()].some((wait) => !wait.replied)) throw new Error("同一轮只允许一次待回包等待。")
+        await Promise.allSettled([...submissions])
+        requireOpen()
+        if (turns.get(params.turnId)?.finished) return
+        if (samplingVersion < acceptedVersion) { value = { reason: "user_input", message: "模型请求期间已有新输入，本次等待意图失效。" }; break }
+        if ([...parked.values()].some((wait) => wait.turnID === params.turnId && !wait.replied)) throw new Error("同一轮只允许一次待回包等待。")
         const record = runtime.begin(owner, args.handle, timeout * 1000)
         parked.set(record.id, { id: message.id!, callID: params.callId, turnID: params.turnId, replied: false })
         runtime.activate(record.id)
@@ -254,20 +293,29 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
       if (params.threadId === owner) activeTurn = params.turn.id
       const state = children.get(params.threadId); if (state && !state.turnID) state.turnID = params.turn.id
     } else if (message.method === "item/completed") {
-      acknowledgements.get(params.item.id)?.()
-      if (params.threadId === owner && params.item.type === "userMessage") samplingVersion = inputVersion
+      if (params.threadId === owner) {
+        const outcome = toolOutcome(params.item)
+        if (outcome) acknowledgements.get(`${params.turnId}:${params.item.id}`)?.(outcome)
+        if (params.item.type === "userMessage" && params.item.clientId?.startsWith(inputPrefix)) {
+          const version = Number(params.item.clientId.slice(inputPrefix.length))
+          samplingVersion = Math.max(samplingVersion, version)
+          acceptInput(version)
+        }
+      }
       const state = children.get(params.threadId)
       if (state && state.turnID === params.turnId && params.item.type === "agentMessage") {
         const text = state.text + params.item.text
         state.truncated ||= text.length > 65_536; state.text = text.slice(-65_536)
       }
     } else if (message.method === "turn/completed") {
-      turn(params.turn.id).resolve(params.turn)
-      if (params.threadId === owner && activeTurn === params.turn.id) {
-        activeTurn = undefined
-        for (const [id, pending] of parked) if (pending.turnID === params.turn.id) {
-          if (!pending.replied) runtime.stopWaits(owner, id)
-          pending.replied = true
+      const completed = turn(params.turn.id)
+      completed.finished = true
+      completed.resolve(params.turn)
+      if (params.threadId === owner) {
+        if (activeTurn === params.turn.id) activeTurn = undefined
+        for (const [id, pending] of parked) if (pending.turnID === params.turn.id && !pending.replied) {
+          runtime.stopWaits(owner, id, "discarded")
+          parked.delete(id)
         }
       }
       completeChild(params.threadId, params.turn)
@@ -279,7 +327,7 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
     if (closePromise) return closePromise
     closed = true
     closePromise = Promise.resolve().then(async () => {
-      runtime.stopWaits(owner)
+      runtime.stopWaits(owner, undefined, "discarded")
       await runtime.close()
       if (activeTurn) await rpc.request("turn/interrupt", { threadId: owner, turnId: activeTurn }).catch(() => {})
       await Promise.allSettled([...creations])
@@ -337,16 +385,20 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
     async prompt(text: string): Promise<CodexTurn> {
       requireOpen()
       if (compacting) throw new Error("Codex 正在压缩，请在控制轮结束后保留并重交输入。")
-      inputVersion++
+      const version = ++submittedVersion
       const current = activeTurn
-      const result = await rpc.request(current ? "turn/steer" : "turn/start", {
-        threadId: owner, input: input(text), additionalContext: context(), ...(current ? { expectedTurnId: current } : {}),
+      const submission = rpc.request(current ? "turn/steer" : "turn/start", {
+        threadId: owner, input: input(text), clientUserMessageId: inputPrefix + version,
+        additionalContext: context(version), ...(current ? { expectedTurnId: current } : {}),
+      }, lifetime.signal).then((result) => {
+        requireOpen()
+        const entry = turn(result.turnId ?? result.turn.id)
+        if (!activeTurn && !entry.finished) activeTurn = entry.public.id
+        acceptInput(version)
+        return entry.public
       })
-      requireOpen()
-      runtime.onInput(owner)
-      for (const record of runtime.snapshot(owner).waits) if (record.reason === "user_input") reply(record.id, record)
-      const id = result.turnId ?? result.turn.id
-      return turn(id).public
+      submissions.add(submission)
+      try { return await submission } finally { submissions.delete(submission) }
     },
     async interrupt() {
       requireOpen(); runtime.onInterrupt(owner)
@@ -354,7 +406,7 @@ export async function createCodexSession(options: CodexSessionOptions): Promise<
     },
     async compact() {
       requireOpen()
-      if (activeTurn || compacting) throw new Error("Codex 0.166.0 不支持保留待回包等待的压缩；本次请求未提交。")
+      if (submissions.size || activeTurn || compacting) throw new Error("Codex 有在途输入或活跃轮次。0.166.0 不支持保留待回包等待的压缩，本次请求未提交。")
       compacting = true
       try {
         // compact/start 只确认入队；实际结束由控制轮事件确认。

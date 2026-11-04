@@ -4,14 +4,14 @@
 
 目标为官方 `rust-v0.166.0` release 的 macOS arm64 二进制，实际输出 `codex-cli 0.166.0`；源码对应 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`。归档与原生二进制 SHA-256 见 [Codex 版本记录](codex.md)。全局 0.147.0 未用于验收。没有宿主源码改动或自行构建的宿主补丁。
 
-`test/codex-runtime.test.mjs` 的 37 项场景使用产品 `createCodexSession` 入口和真实 `codex app-server`，其中一项直接运行 `dist/codex-cli.js` 终端入口完成任务接续。本机 Responses SSE 服务只预设模型回复、工具选择和用量，不替换原生执行循环、工具处理器、命令执行、会话记录或压缩实现。handle 从真实工具结果或压缩后重新注入的结构化状态读取。
+`test/codex-runtime.test.mjs` 的宿主场景使用产品 `createCodexSession` 入口和真实 `codex app-server`，其中一项直接运行 `dist/codex-cli.js` 终端入口完成任务接续。本机 Responses SSE 服务只预设模型回复、工具选择和用量，不替换原生执行循环、工具处理器、命令执行、会话记录或压缩实现。handle 从真实工具结果或压缩后重新注入的结构化状态读取。
 
-37 项覆盖：
-
-- 进程完成、注册等待前完成、非零退出、启动失败、64 KiB 输出尾部、超时后同 handle 重等、等待中新输入与重等、独立取消、显式 interrupt、同批其他工具完成，以及零期限与完成竞争时的一次接续。
+- 进程完成、注册等待前完成、非零退出、启动失败、超过宿主默认捕获上限的 64 KiB 输出尾部、超时后同 handle 重等、等待中新输入与重等、独立取消、显式 interrupt 后同 handle 重等、同批其他工具完成，以及零期限与完成竞争时的一次接续。
 - 独立子 thread 完成、失败、输入后重等、独立取消；原生命令审批使父 handle 返回 `input_required`，明确拒绝后同 handle 可重等并得到子任务最终回答。测试不批准或执行该次提权命令。
 - 原生 read-only 权限下写入失败且目标文件不存在；进程只走 `command/exec`，不调用沙箱外的 shellCommand 或 process/spawn。
 - 正常回包重复发送仍只有一次模型接续；屏蔽 `item/completed` 确认通知后，经原生 `thread/read` 补偿确认接纳。遗漏子任务的回答与完成事件时，按绑定的具体 turn 查询终态并恢复回答文本。通知屏蔽和回包复制只位于测试的连接边界，未替换宿主循环。
+- 未记录完成时间的中断投影保持子任务待确认，真实失败到达后只按失败接续一次。中断抢先于回包时，分别通过真实失败通知和历史复核确认投递已丢弃。模型流期间被拒绝的 steer 保留等待意图。首条输入提交期间压缩请求被拒绝，输入完成后压缩独立结算。门闩和投影复现在连接边界控制时序，模型请求、轮次结束及工具终态由真实宿主产生。
+- 使用临时主目录验证指向默认目录的别名在启动宿主前被拒绝。
 - 父入口 initialize 或 thread/start 回执处理失败后，实际 app-server 进程退出；子 thread 创建失败不发布 handle；close 等待在途子 thread 创建。故障与门闩位于真实原生响应边界，没有产品故障注入配置。
 - reload、fork、switchThread 后旧实例失效、新实例没有旧 handle；close 与在途 fork 或 reload 竞争时不发布替换实例；并发 close 和连接关闭通知中的同步重入获得相同 Promise。
 - 空闲原生 compact、close 收尾在途 compact，以及先结束等待再 compact 后重新等待同 handle；压缩后模型输入仍带任务依赖、deadline 和恢复原因，任务原始输出不进入系统或开发者指令。
@@ -30,7 +30,11 @@ npm run audit:public
 npm pack --dry-run
 ```
 
-`test:codex` 未设置二进制时直接失败；普通 `npm test` 未设置时明确跳过 Codex 场景。2026-11-03 在 macOS arm64、Node.js 26.3.1 上，目标宿主 37 项及设置二进制后的完整 149 项测试均通过；普通完成流程 3 次父模型请求，超时重等 4 次，用户输入后重等或取消 5 次，显式 interrupt 停在 2 次。普通子任务另有一次子模型请求；权限介入的子任务需要原生命令结果后的第二次子模型请求。
+`test:codex` 未设置二进制时直接失败；普通 `npm test` 未设置时明确跳过 Codex 场景。
+
+2026-11-04 在隔离的 macOS arm64、Node.js 26.3.1 环境中，`npm run check`、设置 `CODEX_BIN` 后的 `npm test`（156 项）和 `npm run test:codex`（44 项）均通过。
+
+2026-11-03 在 macOS arm64、Node.js 26.3.1 上，目标宿主 37 项及设置二进制后的完整 149 项测试均通过；普通完成流程 3 次父模型请求，超时重等 4 次，用户输入后重等或取消 5 次，显式 interrupt 停在 2 次。普通子任务另有一次子模型请求；权限介入的子任务需要原生命令结果后的第二次子模型请求。
 
 预设流程的额外父模型唤醒和时长至少 60 秒的 sleep 工具调用均为 0。完整等待场景的单独运行中，从原生命令最终回执、子 turn/completed 或具体 turn 终态查询回执的本地接收时刻（TaskSnapshot.finishedAt）到接续 provider 请求观测为 6–25 毫秒；注册前完成包含其预先完成至开始等待的时间。该值不是操作系统精确退出时刻或生产延迟保证。模型与工具选择由替身预设，不证明真实模型自主选择、摘要质量或性能改善。Linux、Windows、跨重启恢复及宿主补丁均未验收。
 

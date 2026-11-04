@@ -25,12 +25,12 @@ export async function fixture(name) {
     if (name.startsWith("summary")) return
     if (n === 1) {
       if (name.startsWith("child")) return ["start_subagent", { prompt: "CHILD_MARKER：返回合成结果。" }]
-      const code = ["before", "race"].includes(name) ? 'console.log("DONE")' : name === "output" ? 'process.stdout.write("x".repeat(100000));console.log("TAIL")' : name === "failure" ? 'process.exit(7)' : name === "sandbox" ? 'require("node:fs").writeFileSync("denied", "")' : name === "spawn-failure" ? "" :
+      const code = ["before", "race"].includes(name) ? 'console.log("DONE")' : name === "output" ? 'process.stdout.write("x".repeat(1200000));console.log("TAIL")' : name === "failure" ? 'process.exit(7)' : name === "sandbox" ? 'require("node:fs").writeFileSync("denied", "")' : name === "spawn-failure" ? "" :
         'const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("finished", "");console.log("DONE")}},5)'
       return ["start_process", { command: name === "spawn-failure" ? join(cwd, "missing-program") : process.execPath, args: ["-e", code] }]
     }
     if (n === 2) return wait(name === "race" ? 0 : name === "timeout" ? .1 : 30)
-    if (name === "timeout" && n === 3) return wait()
+    if (["timeout", "interrupt-rewait"].includes(name) && n === 3) return wait()
     if (["input", "child-input", "child-permission"].includes(name) && n === 4) return wait()
     if (name.endsWith("cancel") && n === 3) return ["cancel_task", { handle }]
     if (name.endsWith("cancel") && n === 4) return wait()

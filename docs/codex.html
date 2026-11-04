@@ -6,26 +6,27 @@
 <div class="eyebrow">云片糕 YUNPIANGAO · CODEX CLI 0.166.0 · EXPERIMENTAL</div>
 <h1>由 runtime 等待，<br>由 Codex 接续工具轮</h1>
 <p>适配入口管理独立 <code>codex app-server</code> 连接，动态工具绑定原生命令或一次子 thread 执行。等待期间没有模型查询、长 sleep 或额外轮次输入。</p>
-<div class="limit"><strong>部分支持，未完成完整语义移植。</strong> 等待工具保持待回包，原生 turn 仍活跃。公开协议缺少预生成摘要的合法替换提交接口；原生 compact 会中断待回包工具。入口在活跃 turn 上拒绝 compact，未交付宿主补丁。</div>
+<div class="limit"><strong>部分支持，未完成完整语义移植。</strong> 等待工具保持待回包，原生 turn 仍活跃。公开协议缺少预生成摘要的合法替换提交接口；原生 compact 会中断待回包工具。入口在输入提交中或 turn 活跃时拒绝 compact，未交付宿主补丁。</div>
 <p><a href="codex.md">使用与权限契约</a> · <a href="validation.md">验证记录</a> · <a href="https://learn.chatgpt.com/docs/app-server">官方 app-server 文档</a></p>
 <h2>两层代码边界</h2>
 <div class="grid"><section class="box"><h3>核心：<code>wait.ts</code></h3><p>注册具体执行 handle；保存任务快照、单次等待、deadline 和恢复原因；让成功、失败、取消、介入和超时竞争一次结算；通知遗漏时查询状态。</p><p><code>scheduler.ts</code> 保留原有实现，Codex 部分入口没有接入它。</p></section><section class="box"><h3>适配：<code>codex.ts</code> / <code>codex-rpc.ts</code></h3><p>拥有 app-server、工具回调、thread 与 turn、原生命令、取消、权限、输入及连接生命周期。适配层依赖核心，核心没有 Codex SDK 或名称分支。</p><p>stdio 响应、工具回包和通知使用原生协议，不读写聊天库。</p></section></div>
 <h2>一次等待的代码流</h2>
-<div class="flow"><div class="step"><b>01 · 启动</b><code>start_process</code> → <code>command/exec</code><br>或 <code>start_subagent</code> → 独立 thread + 一次 turn<br>→ 注册 TaskHandle</div><div class="arrow">→</div><div class="step"><b>02 · 等待</b><code>wait_for(handle)</code><br>→ <code>begin</code> + <code>activate</code><br>保持原生动态工具待回包；runtime 处理状态事件和期限</div><div class="arrow">→</div><div class="step"><b>03 · 接续</b><code>resume(record)</code><br>→ 原请求 ID 的正常工具结果<br>→ <code>item/completed</code> 确认<br>→ Codex 原生循环继续模型请求</div></div>
-<p>任务在注册等待之前完成时，终态仍可查询；重复通知不会改变已结算原因。同一工具回包标识不会创建新的用户输入。确认通知遗漏时查询原生 thread 历史，断线后关闭实例并停止投递。</p>
+<div class="flow"><div class="step"><b>01 · 启动</b><code>start_process</code> → <code>command/exec</code><br>或 <code>start_subagent</code> → 独立 thread + 一次 turn<br>→ 注册 TaskHandle</div><div class="arrow">→</div><div class="step"><b>02 · 等待</b><code>wait_for(handle)</code><br>→ <code>begin</code> + <code>activate</code><br>保持原生动态工具待回包；runtime 处理状态事件和期限</div><div class="arrow">→</div><div class="step"><b>03 · 接续</b><code>resume(record)</code><br>→ 原请求 ID 的正常工具结果<br>→ 按原 turn 和工具项确认成功<br>→ Codex 原生循环继续模型请求</div></div>
+<p>任务在注册等待前完成时，终态仍可查询。确认通知遗漏时，按原 turn 和工具项查询原生历史。原生工具失败时，投递状态为 <code>discarded</code>，已结算原因保持原值。断线会关闭实例并停止投递。</p>
 <h2>结构化数据流</h2>
-<div class="flow"><div class="step"><b>宿主执行对象</b><code>processId</code> 或 <code>threadId:turnId</code><br>原生命令最终回执、输出及取消；子轮次终态与审批请求</div><div class="arrow">→</div><div class="step"><b>进程内状态</b><code>TaskSnapshot</code><br><code>WaitRecord</code><br>handle、deadline、result、reason、finishedAt</div><div class="arrow">→</div><div class="step"><b>普通模型内容</b>当前等待的工具结果；后续输入的 <code>additionalContext</code> / <code>untrusted</code> 条目<br>任务输出不作为系统指令</div></div>
+<div class="flow"><div class="step"><b>宿主执行对象</b><code>processId</code> 或 <code>threadId:turnId</code><br>原生命令最终回执、合并输出尾部及取消；子轮次终态与审批请求</div><div class="arrow">→</div><div class="step"><b>进程内状态</b><code>TaskSnapshot</code><br><code>WaitRecord</code><br>handle、deadline、result、reason、finishedAt、投递状态</div><div class="arrow">→</div><div class="step"><b>普通模型内容</b>当前等待的工具结果；后续输入的 <code>additionalContext</code> / <code>untrusted</code> 条目<br>任务输出不作为系统指令</div></div>
+<p>命令持续读取 stdout 和 stderr，仅保留合并输出最后 64 KiB。查询子任务历史时，须有该 turn 的完成时间才能确认终态。启动宿主前比较实际目录身份，拒绝指向默认 <code>.codex</code> 的别名。</p>
 <h2>生命周期和竞争</h2>
 <table><thead><tr><th>触发</th><th>实际行为</th><th>任务归属</th></tr></thead><tbody>
 <tr><td>等待到期</td><td>以 timeout 回包，原生循环实际继续；同 handle 可重等</td><td>不取消执行</td></tr>
-<tr><td>用户新输入</td><td>先以 turn/steer 接纳；结束旧等待并回包 user_input；模型期间的过期等待意图被拒绝</td><td>不取消执行</td></tr>
+<tr><td>用户新输入</td><td>宿主接纳后结束旧等待并回包 user_input；模型发出的旧等待意图失效；被拒绝的输入不影响等待</td><td>不取消执行</td></tr>
 <tr><td>独立取消</td><td>command/exec/terminate 或子 turn/interrupt；最终状态来自该次执行</td><td>只针对目标 handle</td></tr>
 <tr><td>需要审批</td><td>子 handle 返回 input_required，原生请求交给嵌入方 UI；入口不自动批准</td><td>可回应或独立取消后重等</td></tr>
 <tr><td>close / 断线</td><td>停止接续、中断父子推理、清理在途创建并关闭连接；并发和重入共享关闭 Promise</td><td>Codex 原生命令归连接所有，关闭不保证后台继续</td></tr>
 <tr><td>reload / fork / switch</td><td>关闭旧实例，使用原生 resume/fork 创建新实例；旧操作失效</td><td>新实例没有旧 handle；不支持跨重启恢复</td></tr>
 </tbody></table>
 <h2>压缩能力的明确界限</h2>
-<div class="grid"><section class="box"><h3>空闲原生 compact</h3><p>入口调用 <code>thread/compact/start</code>，等待控制轮的 <code>turn/completed</code>，然后才允许新的 prompt。原生会话投影和持久化由 Codex 自身负责。</p><p>这次同步控制轮不等于空闲提前准备摘要，也不证明能消费云片糕预备结果。</p></section><section class="box"><h3>等待期 compact 与预备结果提交</h3><p>0.166.0 的 compact handler 先执行 <code>abort_all_tasks(Replaced)</code>；动态工具等待收到取消，原工具被记为失败。入口在发送此操作前拒绝活跃轮次。</p><p><code>inject_items</code> 是追加历史，不能替代压缩。完整支持需要新的宿主提交与正常停放边界，并配套真实回归。</p></section></div>
+<div class="grid"><section class="box"><h3>空闲原生 compact</h3><p>输入提交和活跃轮次结束后，入口才调用 <code>thread/compact/start</code>。控制轮结束后恢复接收 prompt。原生会话投影和持久化由 Codex 自身负责。</p><p>这次同步控制轮不等于空闲提前准备摘要，也不证明能消费云片糕预备结果。</p></section><section class="box"><h3>等待期 compact 与预备结果提交</h3><p>0.166.0 的 compact handler 先执行 <code>abort_all_tasks(Replaced)</code>；动态工具等待收到取消，原工具被记为失败。入口在发送此操作前检查在途输入和活跃轮次。</p><p><code>inject_items</code> 是追加历史，不能替代压缩。完整支持需要新的宿主提交与正常停放边界，并配套真实回归。</p></section></div>
 <h2>可复现验证</h2>
 <p><code>npm run check</code>、<code>npm test</code> 和 <code>CODEX_BIN=/absolute/path/to/codex npm run test:codex</code> 分别验证类型、共享回归和固定宿主真实执行循环。目标宿主命令没有二进制时直接失败，不把跳过当通过。</p>
 <p>每例使用临时项目和显式独立 CODEX_HOME。本机 Responses SSE 替身只预设模型输出，不替换 app-server、工具循环或进程管理；记录模型请求数量、额外唤醒、长 sleep 和任务完成到接续的延迟。这些指标不证明真实模型的自主工具选择、摘要质量或生产性能。</p>
