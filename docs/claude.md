@@ -2,7 +2,7 @@
 
 云片糕提供 Claude Code **2.1.317 Mods** 与 **TypeScript Agent SDK 0.3.317** 入口。SDK 入口加载同一 Mods，并给 `close()` 增加原生 interrupt 收尾。核心调度器和等待状态机保持独立；构建仅把核心的计时器、UUID 映射到 Mods 正式环境，不改 Claude 安装包或聊天文件。
 
-已验证任务等待、原生权限介入、空闲预生成摘要、指纹复核提交和生命周期。**原生 Bash 任务没有正式的完整终态查询接口**：runtime 可补偿自己的通知遗漏，但如果宿主完全不交付该进程的原生终态通知，无法从缓存恢复终态，只能等本次期限。这项缺口使本入口不能宣称覆盖全部目标语义。真实模型自主工具选择、摘要保真度、Windows 与其他架构未验证；Linux x64 已通过 Node.js 22/24 的 CI 回归。
+已验证任务等待、原生权限介入、空闲预生成摘要、指纹复核提交和生命周期。**原生 Bash 任务没有正式的完整终态查询接口**：runtime 可补偿自己的通知遗漏，但如果宿主完全不交付该进程的原生终态通知，无法从缓存恢复终态，只能等本次期限。这项缺口使本入口不能宣称覆盖全部目标语义。真实模型自主工具选择、摘要保真度、Windows 与其他架构未验证；Linux x64 的 Node.js 22/24 CI 结果见[验证记录](validation.md#claude-code--agent-sdk)。
 
 ## 使用
 
@@ -34,7 +34,7 @@ await reader
 
 `inputs` 与 `consume` 由嵌入方提供。必须持续消费 Query 并保持输入流存活；EOF 和字符串 prompt 都采用宿主的单轮/退出语义，不承诺回答后的后台接续。`close()` 并发调用共用同一 Promise，先调用正式 `interrupt()`，再关闭 SDK 进程；还须等待消息消费循环结束。关闭后的 `streamInput()` 拒绝输入，原输入迭代器后续产出的消息也不再转交宿主。其余 Query 方法保留原生语义。原生 `interrupt()` 保留宿主语义；停放时可能没有执行事件。结束单次等待使用 `/ypg-interrupt`，它不取消底层任务。
 
-SDK 调度参数覆盖 `settings.pluginConfigs['yunpiangao@inline'].options` 的同名值。终端可通过原生插件配置设置 `thresholdTokens`（正数）和 `idleDelayMs`（非负毫秒），默认分别为 100,000 和 1,500。SDK 的 `settings` 参数使用对象；其余配置、认证、权限和宿主隔离参数沿用官方 SDK。
+SDK 调度参数覆盖 `settings.pluginConfigs['yunpiangao@inline'].options` 的同名值。SDK 和终端都要求 `thresholdTokens` 为至少 1 的有限数，`idleDelayMs` 为非负有限毫秒数，默认分别为 100,000 和 1,500。SDK 在启动宿主前拒绝无效调度值，终端在注册工具前检查原生插件配置。SDK 的 `settings` 参数使用对象；其余配置、认证、权限和宿主隔离参数沿用官方 SDK。
 
 ## 工具与状态
 
@@ -42,24 +42,26 @@ SDK 调度参数覆盖 `settings.pluginConfigs['yunpiangao@inline'].options` 的
 |---|---|
 | `start_process` | `command`、可选 `description`；调用原生 Bash 的 `run_in_background`，取得具体 `backgroundTaskId`。这里的 command 是原生 shell 命令，不是 Pi 的 argv 接口。 |
 | `start_subagent` | `prompt`、`description`；使用正式 `agent.spawn`，绑定一次原生子 Agent 执行。 |
-| `wait_for` | `handle`、可选 `timeout` 秒，默认 600，范围 0–2,147,483；一轮最多登记一次，可与同批其他工具共存。 |
+| `wait_for` | `handle`、可选 `timeout` 秒，默认 600，范围 0–2,147,483；一个会话同时只保留一次等待，可与同批其他工具共存。 |
 | `cancel_task` | `handle`；通过原生 TaskStop 独立取消。其已停止回执必须包含匹配的 task_id，才更新取消终态。 |
 
 终端和模型看到的完整工具名为 `mcp__yunpiangao__<name>`。`/ypg-status` 返回结构化状态与诊断；`/ypg-close` 停止插件调度并清理其子 Agent，不取消独立 Bash 任务。SDK 在途工具期间的命令可能被宿主排队，应用退出应调用 Query 的 `close()`。
 
-工具登记等待后，原生同批工具先完成。下一次 `turn.step` 通过 Mods 正式流接口输出标明“云片糕”的零用量等待提示并结束一轮；`turn.complete` 激活核心等待。它不是模型请求，也没有声称底层任务已经成功。runtime 使用事件与 100 毫秒状态复核；不让模型查询，不调用长 sleep。
+工具登记等待后，原生同批工具先完成。登记所在轮的下一次 `turn.step` 通过 Mods 流接口输出云片糕的零用量等待提示并结束该轮，`turn.complete` 随后激活核心等待。runtime 用事件和每 100 毫秒一次的状态复核等待结果。
 
-完成、失败、取消、介入和期限竞争同一个 WaitRecord。超时和新输入只结束本次等待，同一执行 handle 可再次等待。SDK 输入在宿主实际处理时触发 `prompt.submit`；在途输入可能先产生一个等待记录，再由该输入将它以 `user_input` 收尾。模型请求代次检查只依据真实 hook 时序，不把客户端发送时间假定为宿主已处理时间。
+如果宿主因 SDK 的 `maxTurns` 等限制跳过停放，适配器在登记所在轮结束时停止这次等待并发出提示。未结算的等待记录为 `interrupted`，已结算的等待保留首个原因。两种情况都收尾为 `delivered`，无需投递结果。若宿主在停放后因轮次耗尽拒绝接续，适配器同样收尾该次等待，保留已结算的原因。原任务由宿主管理，调用方可在下一条输入中用同一 handle 重等，自动接续仍需有足够轮次。
+
+完成、失败、取消、介入和期限竞争同一个 WaitRecord。用户新输入只结束本次等待，同一执行 handle 可再次等待。SDK 输入在宿主实际处理时触发 `prompt.submit`，在途输入可能先产生等待，再由该输入以 `user_input` 收尾。其他原生任务的通知仍交给宿主处理，原等待继续。
 
 Bash 终态来自宿主认证的 `task-notification`，与用户文本中的相似标签区分。插件只解析已登记的原生 ID，保留通知摘要和输出文件引用；详细输出仍通过原生 Read 获取。重复通知不会重复结算。子 Agent 使用 `turn.complete` 缓存本次结果，`agent.list()` 和 `session.messages({agentId})` 补偿遗漏；原生 `tool.check` 的 ask 决策产生 `input_required`，工具调用收尾后解除。权限由原生 UI 或 SDK permission host 处理，插件不自动批准。
 
-接续通过 `prompt.submit` 投递普通用户角色数据，携带等待 ID、原因、结果及依赖。接纳回执丢失时读取正式会话投影复核同一 ID，不重复入队。原始输出不作为系统指令。插件拦下自己拥有的原生通知，避免原生通知与 runtime 各产生一次模型请求；其他任务的通知照常交给宿主。
+接续通过 `prompt.submit` 投递普通用户角色数据，携带等待 ID、原因、结果及依赖。接纳回执丢失时读取正式会话投影复核同一 ID，不重复入队。原始输出作为会话数据传递。插件拦下自己拥有的原生通知，避免原生通知与 runtime 各产生一次模型请求。
 
 ## 摘要与提交
 
 最近一次完整回答的最后一个真实 `turn.step` 用量达到阈值后，核心在空闲窗口准备摘要。输入包括正式会话投影、系统提示章节与依赖；`model.complete` 使用同一模型和原生认证、4,096 output token 预算，不声明工具，不向主会话追加用户消息。摘要请求接受 AbortSignal。文本、工具与 thinking 内容块已纳入检查；遇到其他内容块保留完整历史，不执行这条文本摘要路径。
 
-指纹覆盖输入代次、模型、系统提示、消息投影、原始 API 内容块、工具清单及依赖。准备完成后调用正式 `command.run({command:'compact'})`；在 `session.compact` 的原生替换边界再次读取并复核。通过后返回摘要消息列表，让宿主建立 compact_boundary、替换历史并持久化；不通过则返回 skip，保留完整历史。压缩期间就绪的等待经过原生屏障后接续。没有跨任意其他插件副作用的通用事务保证，其他插件不得在本插件复核之后改写同一提交结果。
+指纹覆盖输入代次、模型、系统提示、消息投影、原始 API 内容块、工具清单及依赖。准备完成后调用正式 `command.run({command:'compact'})`；在 `session.compact` 的原生替换边界再次读取并复核。通过后返回摘要消息列表，让宿主建立 compact_boundary、替换历史并持久化；不通过则返回 skip，保留完整历史。压缩期间就绪的等待经过原生屏障后接续。后续模型请求从 runtime 重新取得结构化依赖，普通输入使用正文，触发模型的斜杠命令使用宿主提供的 `prompt.submit.context`。没有跨任意其他插件副作用的通用事务保证，其他插件不得在本插件复核之后改写同一提交结果。
 
 2.1.317 的 `session.compact()` 方法在 SDK/headless 中明确报不可用；`command.run('compact')` 已实测可用。在线参考的简表只列 skip，但该 build 导出的正式 `SessionCompactResult` 接受消息列表，真实持久压缩已验证。主会话投影读取有原生数量上限；若准备投影与提交范围不一致，指纹不通过，不截取后强行替换。
 

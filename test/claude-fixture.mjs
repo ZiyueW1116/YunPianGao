@@ -25,9 +25,14 @@ export async function fixture(name, scheduling = { thresholdTokens: 999999 }, ob
     await writeFile(join(observerDir, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'a-yunpiangao-test', version: '0.0.1', description: '合成时序验证' }));
     await writeFile(join(observerDir, 'hooks/hooks.json'), JSON.stringify({ modules: ['./register.mjs'] }));
     await writeFile(join(observerDir, 'hooks/register.mjs'), observer)
+    if (name === 'compact-command') {
+      await mkdir(join(observerDir, 'commands'))
+      await writeFile(join(observerDir, 'commands', 'dependency-probe.md'), '---\ndescription: 读取合成任务依赖\n---\n请查看当前任务依赖。DEPENDENCY_PROBE')
+    }
   }
   const calls = [], messages = [], failures = [], releaseSummary = gate(), releaseChild = gate(), releaseWait = gate(), permission = gate()
   let parent = 0, child = 0, summaries = 0, q, handle, state, summaryBlocked = false
+  const maxTurns = name === 'max-turns-submit' ? 2 : name.startsWith('max-turns') ? 3 : 20
   const normal = text => ({ type: 'text', text })
   const tool = (name, input) => ({ type: 'tool_use', id: `tool_${calls.length}`, name: prefix + name, input })
   const findHandle = body => {
@@ -43,9 +48,21 @@ export async function fixture(name, scheduling = { thresholdTokens: 999999 }, ob
       const command = name === 'before' ? 'node -e "console.log(123)"' : name === 'failure' ? 'node -e "process.exit(7)"' : 'node -e \'const fs=require("node:fs");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);fs.writeFileSync("finished","");console.log("DONE")}},5)\''
       return tool('start_process', { command, description: '合成门闩进程' })
     }
+    if (n === 2 && name === 'max-turns-submit') return normal('后台任务继续执行。')
+    if (n === 2 && name.startsWith('max-turns')) return { type: 'tool_use', id: 'read_before_wait', name: 'Read', input: { file_path: join(cwd, 'synthetic.txt') } }
     if (n === 2 && name === 'dependency-summary') return normal('后台任务继续执行。')
     if (n === 2 && name.includes('create-failure')) return normal('合成创建失败已处理。')
-    if (n === 2) { const wait = tool('wait_for', { handle, timeout: name === 'timeout' ? .03 : 10 }); return name === 'batch' ? [wait, { type: 'tool_use', id: 'extra_read', name: 'Read', input: { file_path: join(cwd, 'synthetic.txt') } }] : wait }
+    if (n === 2) {
+      const wait = tool('wait_for', { handle, timeout: name === 'timeout' ? .03 : 10 })
+      if (name === 'batch') return [wait, { type: 'tool_use', id: 'extra_read', name: 'Read', input: { file_path: join(cwd, 'synthetic.txt') } }]
+      if (name === 'other-notification') return [wait, {
+        type: 'tool_use', id: 'other_bash', name: 'Bash',
+        input: { command: 'while [ ! -f release-other ]; do sleep 0.05; done; echo OTHER_DONE', description: '另一原生任务', run_in_background: true },
+      }]
+      return wait
+    }
+    if (n === 3 && name.startsWith('max-turns')) return tool('wait_for', { handle, timeout: name === 'max-turns-ready' ? 0 : 10 })
+    if (n === 4 && name.startsWith('max-turns') && name !== 'max-turns-submit') return tool('wait_for', { handle, timeout: 10 })
     if (name === 'branch' && n === 3) return tool('wait_for', { handle, timeout: 10 })
     if (name === 'timeout' && n === 3) return tool('wait_for', { handle, timeout: 10 })
     if ((name === 'input' || name === 'child-input' || name === 'child-permission') && n === 4) return tool('wait_for', { handle, timeout: 10 })
@@ -94,7 +111,7 @@ export async function fixture(name, scheduling = { thresholdTokens: 999999 }, ob
   const queue = []; let wake, stopped = false
   async function* prompts() { while (!stopped) { if (!queue.length) await new Promise(resolve => { wake = resolve }); while (queue.length) yield { type: 'user', session_id: '', parent_tool_use_id: null, message: { role: 'user', content: queue.shift() } } } }
   const push = text => { queue.push(text); wake?.() }
-  q = createClaudeQuery({ prompt: prompts(), options: { cwd, env, ...(name === 'child-permission' ? { settings: { permissions: { ask: ['Read'] } }, canUseTool: async (tool, input) => { if (tool === 'Read') await permission.promise; return { behavior: 'allow', updatedInput: input } } } : {}), ...(observerDir ? { plugins: [{ type: 'local', path: observerDir }] } : {}), settingSources: [], model: 'claude-sonnet-4-6', maxTurns: 20, allowedTools: name === 'child-permission' ? [] : ['Bash', 'Agent', 'TaskStop', 'Read', `${prefix}start_process`, `${prefix}start_subagent`, `${prefix}wait_for`, `${prefix}cancel_task`], ...(process.env.YPG_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.YPG_CLAUDE_BIN } : {}), stderr: text => { failures.push(new Error(text)) } } }, scheduling)
+  q = createClaudeQuery({ prompt: prompts(), options: { cwd, env, ...(name === 'child-permission' ? { settings: { permissions: { ask: ['Read'] } }, canUseTool: async (tool, input) => { if (tool === 'Read') await permission.promise; return { behavior: 'allow', updatedInput: input } } } : {}), ...(observerDir ? { plugins: [{ type: 'local', path: observerDir }] } : {}), settingSources: [], model: 'claude-sonnet-4-6', maxTurns, allowedTools: name === 'child-permission' ? [] : ['Bash', 'Agent', 'TaskStop', 'Read', `${prefix}start_process`, `${prefix}start_subagent`, `${prefix}wait_for`, `${prefix}cancel_task`], ...(process.env.YPG_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.YPG_CLAUDE_BIN } : {}), stderr: text => { failures.push(new Error(text)) } } }, scheduling)
   const consuming = (async () => { try { for await (const message of q) { messages.push(message); const status = parseStatus(message); if (status) state = status } } catch (error) { if (!stopped) failures.push(error) } })()
   return { q, done: consuming, calls, messages, failures, cwd, root, push, releaseSummary, releaseChild, releaseWait, permission, env,
     counts: () => ({ parent, child, summaries, summaryBlocked }),
@@ -103,6 +120,7 @@ export async function fixture(name, scheduling = { thresholdTokens: 999999 }, ob
     async close() {
       if (process.env.YPG_CLAUDE_DEBUG) await writeFile(join(process.env.YPG_CLAUDE_DEBUG, name + '.json'), JSON.stringify({calls,messages,failures:failures.map(String)}, null, 2))
       releaseSummary.resolve(); releaseChild.resolve(); releaseWait.resolve(); permission.resolve(); await writeFile(join(cwd, 'release'), '')
+      if (name === 'other-notification') await writeFile(join(cwd, 'release-other'), '')
       stopped = true; wake?.(); q.close(); await consuming
       server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true })
     },

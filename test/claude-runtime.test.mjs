@@ -46,6 +46,115 @@ for (const name of ['complete', 'before', 'failure', 'timeout', 'input', 'cancel
   })
 }
 
+test('Claude 无关原生任务通知保留当前等待', { timeout: 15000 }, async () => {
+  const f = await fixture('other-notification')
+  try {
+    f.push('同时启动两个任务，等待云片糕任务。')
+    await until(() => f.messages.some(m => m.type === 'assistant' && JSON.stringify(m.message.content).includes('云片糕：已登记任务等待')))
+    const before = await f.status()
+    await writeFile(join(f.cwd, 'release-other'), '')
+    await until(() => f.counts().parent >= 3)
+    const after = await f.status()
+    assert.equal(after.waits[0].id, before.waits[0].id)
+    assert.equal(after.waits[0].state, 'waiting')
+    assert.ok(JSON.stringify(f.calls.filter(c => c.kind === 'parent')[2].body.messages).includes('另一原生任务'))
+    await f.release()
+    await until(() => f.counts().parent >= 4)
+    const done = await f.status()
+    assert.equal(done.waits[0].state, 'delivered')
+    assert.equal(done.waits[0].reason, 'succeeded')
+    assert.ok(JSON.stringify(f.calls.filter(c => c.kind === 'parent')[3].body.messages).includes(`云片糕等待结果 ${before.waits[0].id}`))
+    await delay(100)
+    assert.equal(f.counts().parent, 4)
+    assert.deepEqual(f.failures, [])
+  } finally { await f.close() }
+})
+
+for (const name of ['max-turns', 'max-turns-ready']) {
+  test(`Claude SDK 达到轮次上限时结束未停放的等待并允许重等：${name}`, { timeout: 15000 }, async () => {
+    const f = await fixture(name)
+    try {
+      f.push('启动任务并等待。')
+      await until(() => f.messages.some(m => m.type === 'result' && m.subtype === 'error_max_turns'))
+      await until(() => f.messages.some(m => m.subtype === 'ui_status' && m.text.includes('本次等待已结束')))
+      await f.release()
+      await until(() => f.messages.some(m => m.subtype === 'task_notification' && m.status === 'completed'))
+      const first = await f.status()
+      assert.equal(first.waits.length, 1)
+      assert.equal(first.waits[0].state, 'delivered')
+      assert.equal(first.waits[0].reason, name === 'max-turns' ? 'interrupted' : 'timeout')
+      assert.equal(first.tasks[0].status, 'succeeded')
+      assert.deepEqual(first.errors, [])
+      assert.equal(f.counts().parent, 3)
+      f.push('再次等待同一任务。')
+      await until(() => f.counts().parent >= 5)
+      const { waits } = await f.status()
+      assert.equal(waits.length, 2)
+      assert.equal(waits[1].state, 'delivered')
+      assert.equal(waits[1].reason, 'succeeded')
+      assert.equal(waits[1].handle.id, waits[0].handle.id)
+      const request = JSON.stringify(f.calls.filter(c => c.kind === 'parent')[4].body.messages)
+      assert.ok(request.includes(`云片糕等待结果 ${waits[1].id}`))
+      assert.ok(!request.includes(`云片糕等待结果 ${waits[0].id}`))
+      await delay(100)
+      assert.equal(f.counts().parent, 5)
+      assert.deepEqual(f.failures, [])
+    } finally { await f.close() }
+  })
+}
+
+test('Claude SDK 停放已占满轮次时收尾被宿主拒绝的接续', { timeout: 15000 }, async () => {
+  const f = await fixture('max-turns-submit')
+  try {
+    f.push('启动任务，先完成本轮回答。')
+    await until(() => f.messages.some(m => m.type === 'result'))
+    f.push('等待同一任务。')
+    await until(() => f.messages.some(m => m.type === 'result' && m.result?.includes('云片糕：已登记任务等待')))
+    await f.release()
+    await until(() => f.messages.some(m => m.subtype === 'ui_status' && m.text.includes('已达到 SDK 轮次上限')))
+    const state = await f.status()
+    assert.equal(state.waits[0].state, 'delivered')
+    assert.equal(state.waits[0].reason, 'succeeded')
+    assert.deepEqual(state.errors, [])
+    await delay(100)
+    assert.equal(f.counts().parent, 3)
+    assert.deepEqual(f.failures, [])
+  } finally { await f.close() }
+})
+
+test('Claude 原生压缩后的提示命令仍携带任务依赖', { timeout: 15000 }, async () => {
+  const f = await fixture('compact-command', undefined, 'export function register() {}')
+  try {
+    f.push('启动任务并等待。')
+    await until(() => f.messages.some(m => m.type === 'assistant' && JSON.stringify(m.message.content).includes('云片糕：已登记任务等待')))
+    f.push('/compact')
+    await until(() => f.messages.some(m => m.subtype === 'compact_boundary'))
+    f.push('/a-yunpiangao-test:dependency-probe')
+    await until(() => f.counts().parent >= 3)
+    const state = await f.status()
+    const [wait] = state.waits
+    assert.equal(wait.reason, 'user_input')
+    assert.equal(state.tasks[0].status, 'working')
+    const request = JSON.stringify(f.calls.filter(c => c.kind === 'parent')[2].body.messages)
+    for (const value of ['DEPENDENCY_PROBE', '云片糕任务运行时状态', wait.handle.id, wait.id, String(wait.deadline), 'user_input']) {
+      assert.ok(request.includes(value), `提示命令的模型请求缺少 ${value}`)
+    }
+    assert.deepEqual(f.failures, [])
+  } finally { await f.close() }
+})
+
+test('Claude 拒绝低于 1 的摘要阈值，且边界值可加载 Mods', { timeout: 15000 }, async () => {
+  assert.throws(() => createClaudeQuery({ prompt: '合成输入' }, { thresholdTokens: 0.5 }), /thresholdTokens/)
+  const f = await fixture('summary-threshold', { thresholdTokens: 1, idleDelayMs: 10 })
+  try {
+    f.push('保留精确事实 SYNTHETIC_FACT_42。')
+    await until(() => f.messages.some(m => m.subtype === 'compact_boundary'))
+    assert.ok(f.messages.some(m => m.subtype === 'init' && m.tools.includes('mcp__yunpiangao__wait_for')))
+    assert.equal((await f.status()).compactResult?.preparedUsed, true)
+    assert.deepEqual(f.failures, [])
+  } finally { await f.close() }
+})
+
 for (const name of ['summary-commit', 'summary-stale']) {
   test(`Claude 空闲摘要：${name}`, { timeout: 30000 }, async () => {
     const f = await fixture(name, { thresholdTokens: 500, idleDelayMs: 10 })
@@ -87,7 +196,17 @@ for (const action of ['close', 'clear', 'reload']) {
 
 for (const scenario of ['duplicate', 'lost-notify', 'lost-ack']) {
   test(`Claude 原生边界：${scenario}`, { timeout: 15000 }, async () => {
-    const observer = scenario === 'duplicate' ? `export function register(on) { on('prompt.submit', async ($,e,next) => { if(e.origin.kind==='task-notification') { $.ui.log('合成重复通知'); await next(e) } return next(e) }) }` : scenario === 'lost-notify' ? `export function register(on) { on('clock.after', {ms:0}, async () => { throw new Error('合成 runtime 通知丢失') }) }` : `export function register(on) { let once=false; on('prompt.submit', async ($,e,next) => { const result=await next(e); if(!once && e.origin.kind==='plugin' && e.origin.name==='yunpiangao') { once=true; $.ui.log('合成接纳回执丢失'); return {drop:'合成接纳回执丢失'} } return result }) }`
+    const observer = scenario === 'duplicate' ? `export function register(on) { on('prompt.submit', async ($,e,next) => { if(e.origin.kind==='task-notification') { $.ui.log('合成重复通知'); await next(e) } return next(e) }) }` : scenario === 'lost-notify' ? `export function register(on) {
+      on('clock.after', {ms:0}, async ($, e, next) => {
+        $.ui.log('已拦截合成 runtime 通知')
+        while (true) {
+          try { await $.fs.read('release-notify'); break }
+          catch { await $.clock.sleep(10, {signal: next.signal}) }
+        }
+        $.ui.log('已放行合成 runtime 通知')
+        return next(e)
+      })
+    }` : `export function register(on) { let once=false; on('prompt.submit', async ($,e,next) => { const result=await next(e); if(!once && e.origin.kind==='plugin' && e.origin.name==='yunpiangao') { once=true; $.ui.log('合成接纳回执丢失'); return {drop:'合成接纳回执丢失'} } return result }) }`
     const f = await fixture(scenario, undefined, observer)
     try {
       f.push('启动合成进程并等待。')
@@ -97,9 +216,21 @@ for (const scenario of ['duplicate', 'lost-notify', 'lost-ack']) {
       assert.equal(f.counts().parent, 3)
       assert.equal(state.waits[0].state, 'delivered')
       assert.equal(state.waits[0].reason, 'succeeded')
-      if (scenario !== 'lost-notify') assert.ok(f.messages.some(m => m.subtype === 'ui_log' && m.plugin === 'a-yunpiangao-test'))
+      const observed = text => f.messages.some(m => m.subtype === 'ui_log' && m.plugin === 'a-yunpiangao-test' && (!text || m.text === text))
+      if (scenario === 'lost-notify') {
+        assert.ok(f.messages.some(m => m.subtype === 'task_notification' && m.status === 'completed'))
+        assert.ok(observed('已拦截合成 runtime 通知'))
+        assert.equal(observed('已放行合成 runtime 通知'), false)
+        await writeFile(join(f.cwd, 'release-notify'), '')
+        await until(() => observed('已放行合成 runtime 通知'))
+        await delay(100)
+        assert.equal(f.counts().parent, 3)
+      } else assert.ok(observed())
       assert.deepEqual(f.failures, [])
-    } finally { await f.close() }
+    } finally {
+      if (scenario === 'lost-notify') await writeFile(join(f.cwd, 'release-notify'), '')
+      await f.close()
+    }
   })
 }
 

@@ -16,7 +16,7 @@ export type ClaudeQueryOptions = Omit<ClaudeOptions, 'settings'> & { settings?: 
  * 字符串 prompt 采用宿主单轮生命周期，不承诺回答后的后台接续。
  */
 export function createClaudeQuery(params: { prompt: string | AsyncIterable<SDKUserMessage>; options?: ClaudeQueryOptions }, scheduling: Options = {}) {
-  for (const [key, fallback, minimum] of [['thresholdTokens', 100000, Number.MIN_VALUE], ['idleDelayMs', 1500, 0]] as const) {
+  for (const [key, fallback, minimum] of [['thresholdTokens', 100000, 1], ['idleDelayMs', 1500, 0]] as const) {
     const value = scheduling[key] ?? fallback
     if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) throw new TypeError(`${key} 的数值无效。`)
   }

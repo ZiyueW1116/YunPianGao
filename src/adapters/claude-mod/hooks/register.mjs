@@ -49,9 +49,9 @@ export function register(on, options) {
   }
   on('session.start', async ($, e, next) => {
     if ((await $.session.version()).version !== '2.1.317') throw new Error('云片糕 Mods 入口要求 Claude Code 2.1.317。')
-    if (!(typeof options.thresholdTokens === 'number' && Number.isFinite(options.thresholdTokens) && options.thresholdTokens > 0 && typeof options.idleDelayMs === 'number' && Number.isFinite(options.idleDelayMs) && options.idleDelayMs >= 0)) throw new Error('摘要阈值须为正数，空闲延迟须为非负数。')
+    if (!(typeof options.thresholdTokens === 'number' && Number.isFinite(options.thresholdTokens) && options.thresholdTokens >= 1 && typeof options.idleDelayMs === 'number' && Number.isFinite(options.idleDelayMs) && options.idleDelayMs >= 0)) throw new Error('摘要阈值须至少为 1，空闲延迟须为非负数。')
     const { createWaitRuntime, createYunPianGao } = createCore($)
-    const s = { id: await $.session.id(), epoch: 0, closed: false, tasks: new Map(), accepted: new Set(), starting: new Set(), parked: undefined, running: false, compacting: false, latest: undefined, compactResult: undefined, childResults: new Map(), interventions: new Map(), errors: [] }
+    const s = { id: await $.session.id(), epoch: 0, inputEpoch: 0, closed: false, tasks: new Map(), accepted: new Set(), starting: new Set(), parked: undefined, running: false, compacting: false, latest: undefined, compactResult: undefined, childResults: new Map(), interventions: new Map(), errors: [] }
     const owned = await $.state.get({ plugin: 'yunpiangao', key: 'ownedTasks' })
     s.knownIDs = new Set(owned.value?.sessionID === s.id ? owned.value.ids : [])
     instance = s
@@ -84,6 +84,12 @@ export function register(on, options) {
         if (s.parked?.id === record.id) s.parked = undefined
         try {
           const response = await $.prompt.submit({ text })
+          // Claude Code 2.1.317 只用 drop 文本报告本次 SDK 运行的轮次已耗尽。
+          if (response.drop === 'the run reached its --max-turns limit') {
+            s.runtime.stopWaits(s.id, record.id)
+            $.ui.status('Claude 已达到 SDK 轮次上限，本次等待已结束。可在有足够轮次时重等同一 handle。')
+            return
+          }
           if (response.drop) throw new Error('宿主拒绝了云片糕接续输入。')
           s.accepted.add(record.id)
         } catch (error) {
@@ -166,10 +172,10 @@ export function register(on, options) {
   }).catch(($, e, next) => ({ deny: next.error.message }))
   on('tool.call', { tool: 'mcp__yunpiangao__wait_for' }, async ($, e, next) => {
     const s = open(e)
-    if (s.parked) throw new Error('一轮只能登记一次等待。')
-    if (s.requestEpoch !== s.epoch) throw new Error('模型请求期间有新输入；旧等待意图已失效。')
+    if (s.parked) throw new Error('已有一次等待，请等本次接续或先结束等待。')
+    if (s.requestInputEpoch !== s.inputEpoch) throw new Error('模型请求期间有新输入；旧等待意图已失效。')
     const record = s.runtime.begin(s.id, e.handle, (e.timeout ?? 600) * 1000)
-    s.parked = record
+    s.parked = { id: record.id, turnId: s.turnId, endedByPlugin: false }
     return { result: encode({ registered: record, instruction: '本轮工具完成后由云片糕停放，等待结果由 runtime 接续。' }) }
   }).catch(($, e, next) => ({ deny: next.error.message }))
   on('tool.call', { tool: 'mcp__yunpiangao__cancel_task' }, async ($, e, next) => {
@@ -199,14 +205,15 @@ export function register(on, options) {
   on('turn.step', async function* ($, e, next) {
     const s = instance
     if (!s || s.closed || e.agentId) return yield* next(e)
-    if (s.parked && s.requestEpoch === s.epoch) {
-      s.parkingTurn = e.turnId
+    if (s.parked?.turnId === e.turnId && s.requestInputEpoch === s.inputEpoch) {
       const text = '云片糕：已登记任务等待，runtime 将在结果或期限到达时接续。'
+      const parked = s.parked
       yield { kind: 'text', index: 0, text }
       yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+      parked.endedByPlugin = true
       return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage: null }
     }
-    s.requestEpoch = s.epoch
+    s.requestInputEpoch = s.inputEpoch
     const result = yield* next(e)
     s.lastUsage = { turnId: e.turnId, usage: result.usage }
     return result
@@ -241,10 +248,15 @@ export function register(on, options) {
     }
     s.epoch++
     s.scheduler.onInput(s.id)
-    s.runtime.onInput(s.id)
-    if (s.parked) s.runtime.activate(s.parked.id)
-    s.parked = undefined
-    return next({ ...e, text: `${e.text}\n\n云片糕任务运行时状态\n${encode(s.dependencies())}` })
+    if (['composer', 'sdk', 'bridge', 'slack-ping'].includes(e.origin.kind)) {
+      s.inputEpoch++
+      s.runtime.onInput(s.id)
+      if (s.parked) s.runtime.activate(s.parked.id)
+      s.parked = undefined
+    }
+    const context = `云片糕任务运行时状态\n${encode(s.dependencies())}`
+    if (e.command) return next({ ...e, context: [...(e.context ?? []), context] })
+    return next({ ...e, text: `${e.text}\n\n${context}` })
   })
   on('turn.start', async ($, e, next) => {
     const s = instance
@@ -259,11 +271,20 @@ export function register(on, options) {
     }
     if (s && !s.closed && !e.agentId) {
       s.running = false
-      if (e.reason === 'answer' && s.parkingTurn === e.turnId && s.parked) {
-        s.parkingTurn = undefined
-        s.runtime.activate(s.parked.id)
+      if (e.reason === 'aborted') {
+        s.runtime.onInterrupt(s.id)
+        if (s.parked) s.runtime.activate(s.parked.id)
+        s.parked = undefined
+      }
+      if (s.parked?.turnId === e.turnId) {
+        if (s.parked.endedByPlugin && e.reason === 'answer') s.runtime.activate(s.parked.id)
+        else {
+          // 达到 SDK 轮次上限会跳过停放，且宿主拒绝本次运行的自动接续。
+          s.runtime.stopWaits(s.id, s.parked.id)
+          s.parked = undefined
+          $.ui.status('云片糕未能停放，本次等待已结束。可再次等待同一 handle。')
+        }
       } else {
-        if (e.reason === 'aborted') { s.runtime.onInterrupt(s.id); if (s.parked) s.runtime.activate(s.parked.id); s.parked = undefined }
         const usage = s.lastUsage?.turnId === e.turnId ? s.lastUsage.usage : undefined
         s.latest = e.reason === 'answer' && usage ? { messageID: e.turnId, tokens: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) } : undefined
         s.scheduler.onExecution(s.id, e.reason === 'answer' ? 'succeeded' : 'failed')
@@ -292,7 +313,7 @@ export function register(on, options) {
       } catch { return { skip: '摘要指纹已失效；保留完整历史。' } }
     } finally { s.compacting = false; endCompaction() }
   }).catch(() => ({ skip: '云片糕压缩复核失败；保留完整历史。' }))
-  on('classic.PreModelSwitch', async ($, e, next) => { const s = instance; if (s && !s.closed) { s.epoch++; s.scheduler.onInput(s.id) } return next(e) })
+  on('classic.PreModelSwitch', async ($, e, next) => { const s = instance; if (s && !s.closed) { s.epoch++; s.inputEpoch++; s.scheduler.onInput(s.id) } return next(e) })
   on('command.run', { command: 'ypg-status' }, async ($, e, next) => {
     const s = instance
     return { text: encode(s ? { closed: s.closed, ...s.runtime.snapshot(s.id), compactResult: s.compactResult, errors: s.errors } : { closed: true }) }

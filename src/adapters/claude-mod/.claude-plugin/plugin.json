@@ -10,7 +10,7 @@
       "type": "number",
       "title": "摘要阈值（tokens）",
       "default": 100000,
-      "description": "最近完整回答用量达到阈值后准备摘要。"
+      "description": "阈值至少为 1。最近完整回答用量达到阈值后准备摘要。"
     },
     "idleDelayMs": {
       "type": "number",
